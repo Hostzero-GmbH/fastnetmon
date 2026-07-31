@@ -3227,11 +3227,168 @@ void add_total_traffic_to_prometheus(const total_speed_counters_t& total_counter
             output << "# HELP Total traffic in flows\n";
             output << "# TYPE " << flows_metric_name << " gauge\n";
             output << flows_metric_name << "{traffic_direction=\"" << direction_as_string << "\",protocol_version=\""
-                   << protocol_version << "\"}" << flow_rate << "\n";
+                   << protocol_version << "\"} " << flow_rate << "\n";
         }
     }
 }
 
+// Adds per-IP host traffic volume metrics to Prometheus endpoint (non-zero only)
+void add_per_ip_host_traffic_to_prometheus(std::stringstream& output) {
+    extern abstract_subnet_counters_t<uint32_t, subnet_counter_t> ipv4_host_counters;
+    extern abstract_subnet_counters_t<subnet_ipv6_cidr_mask_t, subnet_counter_t> ipv6_host_counters;
+
+    output << "# HELP fastnetmon_host_traffic_bits Per-IP traffic volume in bits per second\n";
+    output << "# TYPE fastnetmon_host_traffic_bits gauge\n";
+    output << "# HELP fastnetmon_host_traffic_packets Per-IP traffic volume in packets per second\n";
+    output << "# TYPE fastnetmon_host_traffic_packets gauge\n";
+    output << "# HELP fastnetmon_host_traffic_flows Per-IP traffic volume in flows per second\n";
+    output << "# TYPE fastnetmon_host_traffic_flows gauge\n";
+
+    // IPv4 hosts
+    {
+        std::vector<std::pair<uint32_t, subnet_counter_t>> speed_elements;
+        ipv4_host_counters.get_all_non_zero_average_speed_elements_as_pairs(speed_elements);
+
+        for (const auto& elem : speed_elements) {
+            const auto& speed = elem.second;
+            if (speed.is_zero()) {
+                continue;
+            }
+
+            std::string ip = convert_ip_as_uint_to_string(elem.first);
+
+            if (speed.total.in_packets > 0) {
+                output << "fastnetmon_host_traffic_packets{ip=\"" << ip
+                       << "\",traffic_direction=\"incoming\",protocol_version=\"ipv4\"} "
+                       << speed.total.in_packets << "\n";
+            }
+            if (speed.total.in_bytes > 0) {
+                output << "fastnetmon_host_traffic_bits{ip=\"" << ip
+                       << "\",traffic_direction=\"incoming\",protocol_version=\"ipv4\"} "
+                       << speed.total.in_bytes * 8 << "\n";
+            }
+            if (speed.in_flows > 0) {
+                output << "fastnetmon_host_traffic_flows{ip=\"" << ip
+                       << "\",traffic_direction=\"incoming\",protocol_version=\"ipv4\"} "
+                       << speed.in_flows << "\n";
+            }
+            if (speed.total.out_packets > 0) {
+                output << "fastnetmon_host_traffic_packets{ip=\"" << ip
+                       << "\",traffic_direction=\"outgoing\",protocol_version=\"ipv4\"} "
+                       << speed.total.out_packets << "\n";
+            }
+            if (speed.total.out_bytes > 0) {
+                output << "fastnetmon_host_traffic_bits{ip=\"" << ip
+                       << "\",traffic_direction=\"outgoing\",protocol_version=\"ipv4\"} "
+                       << speed.total.out_bytes * 8 << "\n";
+            }
+            if (speed.out_flows > 0) {
+                output << "fastnetmon_host_traffic_flows{ip=\"" << ip
+                       << "\",traffic_direction=\"outgoing\",protocol_version=\"ipv4\"} "
+                       << speed.out_flows << "\n";
+            }
+        }
+    }
+
+    // IPv6 hosts
+    {
+        std::vector<std::pair<subnet_ipv6_cidr_mask_t, subnet_counter_t>> speed_elements;
+        ipv6_host_counters.get_all_non_zero_average_speed_elements_as_pairs(speed_elements);
+
+        for (const auto& elem : speed_elements) {
+            const auto& speed = elem.second;
+            if (speed.is_zero()) {
+                continue;
+            }
+
+            std::string ip = print_ipv6_cidr_subnet(elem.first);
+
+            if (speed.total.in_packets > 0) {
+                output << "fastnetmon_host_traffic_packets{ip=\"" << ip
+                       << "\",traffic_direction=\"incoming\",protocol_version=\"ipv6\"} "
+                       << speed.total.in_packets << "\n";
+            }
+            if (speed.total.in_bytes > 0) {
+                output << "fastnetmon_host_traffic_bits{ip=\"" << ip
+                       << "\",traffic_direction=\"incoming\",protocol_version=\"ipv6\"} "
+                       << speed.total.in_bytes * 8 << "\n";
+            }
+            if (speed.in_flows > 0) {
+                output << "fastnetmon_host_traffic_flows{ip=\"" << ip
+                       << "\",traffic_direction=\"incoming\",protocol_version=\"ipv6\"} "
+                       << speed.in_flows << "\n";
+            }
+            if (speed.total.out_packets > 0) {
+                output << "fastnetmon_host_traffic_packets{ip=\"" << ip
+                       << "\",traffic_direction=\"outgoing\",protocol_version=\"ipv6\"} "
+                       << speed.total.out_packets << "\n";
+            }
+            if (speed.total.out_bytes > 0) {
+                output << "fastnetmon_host_traffic_bits{ip=\"" << ip
+                       << "\",traffic_direction=\"outgoing\",protocol_version=\"ipv6\"} "
+                       << speed.total.out_bytes * 8 << "\n";
+            }
+            if (speed.out_flows > 0) {
+                output << "fastnetmon_host_traffic_flows{ip=\"" << ip
+                       << "\",traffic_direction=\"outgoing\",protocol_version=\"ipv6\"} "
+                       << speed.out_flows << "\n";
+            }
+        }
+    }
+}
+
+// Adds banned routes metrics to Prometheus endpoint
+void add_banned_routes_to_prometheus(std::stringstream& output) {
+    extern blackhole_ban_list_t<uint32_t> ban_list_ipv4;
+    extern blackhole_ban_list_t<subnet_ipv6_cidr_mask_t> ban_list_ipv6;
+
+    output << "# HELP fastnetmon_banned_routes Currently banned routes (gauge=1 means banned)\n";
+    output << "# TYPE fastnetmon_banned_routes gauge\n";
+    output << "# HELP fastnetmon_banned_routes_ban_timestamp_seconds Unix timestamp when the route was banned\n";
+    output << "# TYPE fastnetmon_banned_routes_ban_timestamp_seconds gauge\n";
+    output << "# HELP fastnetmon_banned_routes_total Total number of currently banned routes\n";
+    output << "# TYPE fastnetmon_banned_routes_total gauge\n";
+
+    // IPv4 banned routes
+    {
+        std::map<uint32_t, attack_details_t> ban_list_copy;
+        ban_list_ipv4.get_whole_banlist(ban_list_copy);
+
+        for (const auto& itr : ban_list_copy) {
+            std::string ip = convert_ip_as_uint_to_string(itr.first);
+            output << "fastnetmon_banned_routes{ip=\"" << ip
+                   << "\",protocol_version=\"ipv4\",host_group=\""
+                   << itr.second.host_group << "\",attack_uuid=\""
+                   << itr.second.get_attack_uuid_as_string() << "\"} 1\n";
+            output << "fastnetmon_banned_routes_ban_timestamp_seconds{ip=\"" << ip
+                   << "\",protocol_version=\"ipv4\"} "
+                   << itr.second.ban_timestamp << "\n";
+        }
+
+        output << "fastnetmon_banned_routes_total{protocol_version=\"ipv4\"} "
+               << ban_list_copy.size() << "\n";
+    }
+
+    // IPv6 banned routes
+    {
+        std::map<subnet_ipv6_cidr_mask_t, attack_details_t> ban_list_copy;
+        ban_list_ipv6.get_whole_banlist(ban_list_copy);
+
+        for (const auto& itr : ban_list_copy) {
+            std::string ip = print_ipv6_cidr_subnet(itr.first);
+            output << "fastnetmon_banned_routes{ip=\"" << ip
+                   << "\",protocol_version=\"ipv6\",host_group=\""
+                   << itr.second.host_group << "\",attack_uuid=\""
+                   << itr.second.get_attack_uuid_as_string() << "\"} 1\n";
+            output << "fastnetmon_banned_routes_ban_timestamp_seconds{ip=\"" << ip
+                   << "\",protocol_version=\"ipv6\"} "
+                   << itr.second.ban_timestamp << "\n";
+        }
+
+        output << "fastnetmon_banned_routes_total{protocol_version=\"ipv6\"} "
+               << ban_list_copy.size() << "\n";
+    }
+}
 
 // This function produces an HTTP response for the given
 // request. The type of the response object depends on the
@@ -3328,6 +3485,12 @@ void handle_prometheus_http_request(boost::beast::http::request<Body, boost::bea
     extern total_speed_counters_t total_counters_ipv6;
 
     add_total_traffic_to_prometheus(total_counters_ipv6, output, "ipv6");
+
+    // Per-IP host traffic volume (non-zero only)
+    add_per_ip_host_traffic_to_prometheus(output);
+
+    // Banned routes
+    add_banned_routes_to_prometheus(output);
 
     res.body() = output.str();
 
