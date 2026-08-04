@@ -21,14 +21,14 @@
 
 #include "fast_endianless.hpp"
 
+#include "abstract_subnet_counters.hpp"
+
 #ifdef FASTNETMON_API
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #endif // __GNUC__
-
-#include "abstract_subnet_counters.hpp"
 
 #include "fastnetmon_internal_api.grpc.pb.h"
 #include <grpc++/grpc++.h>
@@ -433,6 +433,11 @@ host_group_map_t host_groups;
 
 // Here we store assignment from subnet to certain host group for fast lookup
 subnet_to_host_group_map_t subnet_to_host_groups;
+// IPv6 subnet to host group mapping
+std::map<subnet_ipv6_cidr_mask_t, std::string> subnet_to_host_groups_ipv6;
+// Per-IP ban override maps (checked before host group lookup)
+std::map<uint32_t, ban_settings_t> per_ip_ban_overrides_ipv4;
+std::map<subnet_ipv6_cidr_mask_t, ban_settings_t> per_ip_ban_overrides_ipv6;
 
 host_group_ban_settings_map_t host_group_ban_settings_map;
 
@@ -569,26 +574,40 @@ void parse_hostgroups(std::string name, std::string value) {
     std::vector<std::string> hostgroup_subnets = split_strings_to_vector_by_comma(splitted_new_host_group[1]);
 
     for (std::vector<std::string>::iterator itr = hostgroup_subnets.begin(); itr != hostgroup_subnets.end(); ++itr) {
+        // Try IPv4 first
         subnet_cidr_mask_t subnet;
-
         bool subnet_parse_result = convert_subnet_from_string_to_binary_with_cidr_format_safe(*itr, subnet);
 
-        if (!subnet_parse_result) {
-            logger << log4cpp::Priority::ERROR << "Cannot parse subnet " << *itr;
-            continue;
-        }
+        if (subnet_parse_result) {
+            host_groups[host_group_name].push_back(subnet);
 
-        host_groups[host_group_name].push_back(subnet);
+            logger << log4cpp::Priority::WARN << "We add subnet " << convert_subnet_to_string(subnet) << " to host group " << host_group_name;
 
-        logger << log4cpp::Priority::WARN << "We add subnet " << convert_subnet_to_string(subnet) << " to host group " << host_group_name;
-
-        // And add to subnet to host group lookup hash
-        if (subnet_to_host_groups.count(subnet) > 0) {
-            // Huston, we have problem! Subnet to host group mapping should map single subnet to single group!
-            logger << log4cpp::Priority::WARN << "Seems you have specified single subnet " << *itr
-                   << " to multiple host groups, please fix it, it's prohibited";
+            if (subnet_to_host_groups.count(subnet) > 0) {
+                logger << log4cpp::Priority::WARN << "Seems you have specified single subnet " << *itr
+                       << " to multiple host groups, please fix it, it's prohibited";
+            } else {
+                subnet_to_host_groups[subnet] = host_group_name;
+            }
         } else {
-            subnet_to_host_groups[subnet] = host_group_name;
+            // Try IPv6
+            subnet_ipv6_cidr_mask_t ipv6_subnet;
+            bool ipv6_parse_result = read_ipv6_subnet_from_string(ipv6_subnet, *itr);
+
+            if (ipv6_parse_result) {
+                logger << log4cpp::Priority::WARN << "We add IPv6 subnet " << print_ipv6_cidr_subnet(ipv6_subnet)
+                       << " to host group " << host_group_name;
+
+                if (subnet_to_host_groups_ipv6.count(ipv6_subnet) > 0) {
+                    logger << log4cpp::Priority::WARN << "Seems you have specified single IPv6 subnet " << *itr
+                           << " to multiple host groups, please fix it, it's prohibited";
+                } else {
+                    subnet_to_host_groups_ipv6[ipv6_subnet] = host_group_name;
+                }
+            } else {
+                logger << log4cpp::Priority::ERROR << "Cannot parse subnet " << *itr << " as IPv4 or IPv6";
+                continue;
+            }
         }
     }
 
@@ -1038,6 +1057,68 @@ bool load_configuration_file() {
 
         logger << log4cpp::Priority::DEBUG << "We read " << host_group_name << " ban settings "
             << print_ban_thresholds(host_group_ban_settings_map[ host_group_name ]);
+    }
+
+    // Parse per-IP ban overrides
+    for (auto itr = configuration_map.begin(); itr != configuration_map.end(); ++itr) {
+        if (itr->first != "ip_override") {
+            continue;
+        }
+
+        // Format: ip_override = IP:setting1=value1,setting2=value2
+        std::string value = itr->second;
+        std::vector<std::string> parts;
+        split(parts, value, boost::is_any_of(":"), boost::token_compress_on);
+
+        if (parts.size() != 2) {
+            logger << log4cpp::Priority::ERROR << "Cannot parse ip_override (expected format IP:settings): " << value;
+            continue;
+        }
+
+        boost::algorithm::trim(parts[0]);
+        boost::algorithm::trim(parts[1]);
+
+        std::string ip_str = parts[0];
+        std::string settings_str = parts[1];
+
+        // Build a pseudo-config-map from the settings string
+        configuration_map_t override_config;
+        std::vector<std::string> setting_pairs;
+        split(setting_pairs, settings_str, boost::is_any_of(","), boost::token_compress_on);
+
+        for (auto& pair : setting_pairs) {
+            boost::algorithm::trim(pair);
+            std::vector<std::string> kv;
+            split(kv, pair, boost::is_any_of("="), boost::token_compress_on);
+            if (kv.size() == 2) {
+                boost::algorithm::trim(kv[0]);
+                boost::algorithm::trim(kv[1]);
+                override_config[kv[0]] = kv[1];
+            }
+        }
+
+        ban_settings_t override_settings = read_ban_settings(override_config, "");
+
+        // Try IPv4 first
+        uint32_t ipv4_int = 0;
+        if (convert_ip_as_string_to_uint_safe(ip_str, ipv4_int)) {
+            per_ip_ban_overrides_ipv4[ipv4_int] = override_settings;
+            logger << log4cpp::Priority::INFO << "Added per-IP override for " << ip_str
+                   << ": " << print_ban_thresholds(override_settings);
+            continue;
+        }
+
+        // Try IPv6
+        subnet_ipv6_cidr_mask_t ipv6_subnet;
+        if (read_ipv6_host_from_string(ip_str, ipv6_subnet.subnet_address)) {
+            ipv6_subnet.cidr_prefix_length = 128;
+            per_ip_ban_overrides_ipv6[ipv6_subnet] = override_settings;
+            logger << log4cpp::Priority::INFO << "Added per-IP override for " << ip_str
+                   << ": " << print_ban_thresholds(override_settings);
+            continue;
+        }
+
+        logger << log4cpp::Priority::ERROR << "Cannot parse IP address for ip_override: " << ip_str;
     }
 
     if (configuration_map.count("white_list_path") != 0) {

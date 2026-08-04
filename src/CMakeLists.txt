@@ -414,7 +414,9 @@ target_link_libraries(filter bgp_protocol bgp_protocol_flow_spec)
 add_library(fastnetmon_logic STATIC fastnetmon_logic.cpp)
 
 # API library
+if (ENABLE_GOBGP_SUPPORT)
 add_library(fastnetmon_api STATIC api.cpp)
+endif()
 
 
 CHECK_CXX_SOURCE_COMPILES("
@@ -1015,7 +1017,9 @@ target_link_libraries(fastnetmon ${LOG4CPP_LIBRARY_PATH})
 
 target_link_libraries(fastnetmon ${CMAKE_THREAD_LIBS_INIT})
 
+if (ENABLE_GOBGP_SUPPORT)
 target_link_libraries(fastnetmon fastnetmon_api)
+endif()
 
 # We need it for boost::stacktrace
 # To address undefined reference to symbol 'dladdr@@GLIBC_2.2.5
@@ -1029,7 +1033,9 @@ target_link_libraries(fastnetmon ipfix_rfc)
 
 target_link_libraries(fastnetmon_logic filter bgp_protocol bgp_protocol_flow_spec exabgp_action)
 
+if (ENABLE_GOBGP_SUPPORT)
 target_link_libraries(fastnetmon_logic protobuf_traffic_format)
+endif()
 
 target_link_libraries(fastnetmon_logic speed_counters)
 
@@ -1189,7 +1195,9 @@ endif()
 
 install(TARGETS fastnetmon DESTINATION "${CMAKE_INSTALL_SBINDIR}")
 install(TARGETS fastnetmon_client DESTINATION "${CMAKE_INSTALL_BINDIR}")
+if (ENABLE_GOBGP_SUPPORT)
 install(TARGETS fastnetmon_api_client DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 
 install(FILES fastnetmon.conf DESTINATION "${CMAKE_INSTALL_SYSCONFDIR}")
 
