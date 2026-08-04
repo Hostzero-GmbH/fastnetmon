@@ -4,10 +4,18 @@ __pycache__
 src/build/
 src/gobgp_client/attribute.pb.cc
 src/gobgp_client/attribute.pb.h
+src/gobgp_client/capability.pb.cc
+src/gobgp_client/capability.pb.h
+src/gobgp_client/common.pb.cc
+src/gobgp_client/common.pb.h
+src/gobgp_client/extcom.pb.cc
+src/gobgp_client/extcom.pb.h
 src/gobgp_client/gobgp.grpc.pb.cc
 src/gobgp_client/gobgp.grpc.pb.h
 src/gobgp_client/gobgp.pb.cc
 src/gobgp_client/gobgp.pb.h
+src/gobgp_client/nlri.pb.cc
+src/gobgp_client/nlri.pb.h
 src/fastnetmon_internal_api.grpc.pb.cc
 src/fastnetmon_internal_api.grpc.pb.h
 src/fastnetmon_internal_api.pb.cc
@@ -16,3 +24,11 @@ src/simple_packet_capnp/simple_packet.capnp.c++
 src/simple_packet_capnp/simple_packet.capnp.h
 src/traffic_output_formats/protobuf/traffic_data.pb.cc
 src/traffic_output_formats/protobuf/traffic_data.pb.h
+
+# Build artifacts
+build/
+build2/
+dist/
+.cache/
+fastnetmon-gobgp-flowspec.tar.gz
+patchelf_*.deb

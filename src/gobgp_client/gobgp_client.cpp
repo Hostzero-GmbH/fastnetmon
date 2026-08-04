@@ -48,7 +48,7 @@ unsigned int gobgp_client_connection_timeout = 5;
 
 extern log4cpp::Category& logger;
 
-GrpcClient::GrpcClient(std::shared_ptr<grpc::Channel> channel) : stub_(apipb::GobgpApi::NewStub(channel)) {
+GrpcClient::GrpcClient(std::shared_ptr<grpc::Channel> channel) : stub_(api::GoBgpService::NewStub(channel)) {
 
 }
 
@@ -61,8 +61,8 @@ bool GrpcClient::AnnounceCommonPrefix(dynamic_binary_buffer_t binary_nlri,
                                       unsigned int safi) {
     // We're not going to free this memory and we delegate it to gRPC
     // but we need to tell about it to PVS
-    //+V773:SUPPRESS, class:Path, namespace:apipb
-    apipb::Path* current_path = new apipb::Path;
+    //+V773:SUPPRESS, class:Path, namespace:api
+    api::Path* current_path = new api::Path;
 
     if (is_withdrawal) {
         current_path->set_is_withdraw(true);
@@ -70,22 +70,22 @@ bool GrpcClient::AnnounceCommonPrefix(dynamic_binary_buffer_t binary_nlri,
 
     // We're not going to free this memory and we delegate it to gRPC
     // but we need to tell about it to PVS
-    //+V773:SUPPRESS, class:Family, namespace:apipb
-    auto route_family = new apipb::Family;
+    //+V773:SUPPRESS, class:Family, namespace:api
+    auto route_family = new api::Family;
 
     if (afi == AFI_IP) {
-        route_family->set_afi(apipb::Family::AFI_IP);
+        route_family->set_afi(api::Family::AFI_IP);
     } else if (afi == AFI_IP6) {
-        route_family->set_afi(apipb::Family::AFI_IP6);
+        route_family->set_afi(api::Family::AFI_IP6);
     } else {
         logger << log4cpp::Priority::ERROR << "Unknown AFI";
         return false;
     }
 
     if (safi == SAFI_UNICAST) {
-        route_family->set_safi(apipb::Family::SAFI_UNICAST);
+        route_family->set_safi(api::Family::SAFI_UNICAST);
     } else if (safi == SAFI_FLOW_SPEC_UNICAST) {
-        route_family->set_safi(apipb::Family::SAFI_FLOW_SPEC_UNICAST);
+        route_family->set_safi(api::Family::SAFI_FLOW_SPEC_UNICAST);
     } else {
         logger << log4cpp::Priority::ERROR << "Unknown SAFI";
         return false;
@@ -98,8 +98,8 @@ bool GrpcClient::AnnounceCommonPrefix(dynamic_binary_buffer_t binary_nlri,
         current_path->add_pattrs_binary(bgp_attribute.get_pointer(), bgp_attribute.get_used_size());
     }
 
-    apipb::AddPathRequest request;
-    request.set_table_type(apipb::TableType::GLOBAL);
+    api::AddPathRequest request;
+    request.set_table_type(api::TableType::TABLE_TYPE_GLOBAL);
     request.set_allocated_path(current_path);
 
     grpc::ClientContext context;
@@ -109,7 +109,7 @@ bool GrpcClient::AnnounceCommonPrefix(dynamic_binary_buffer_t binary_nlri,
         std::chrono::system_clock::now() + std::chrono::seconds(gobgp_client_connection_timeout);
     context.set_deadline(deadline);
 
-    apipb::AddPathResponse response;
+    api::AddPathResponse response;
 
     // Don't be confused by name, it also can withdraw announces
     auto status = stub_->AddPath(&context, request, &response);

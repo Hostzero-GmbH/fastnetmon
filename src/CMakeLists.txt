@@ -751,9 +751,9 @@ if (ENABLE_GOBGP_SUPPORT)
 
     message(STATUS "Protoc return code for gobgp.proto gRPC: ${PROTOC_RETURN_CODE} std err: ${PROTOC_STDERR}")
 
-    execute_process(COMMAND ${Protobuf_PROTOC_EXECUTABLE} -I  ${PROJECT_SOURCE_DIR}/gobgp_client --cpp_out=${PROJECT_SOURCE_DIR}/gobgp_client ${PROJECT_SOURCE_DIR}/gobgp_client/gobgp.proto ${PROJECT_SOURCE_DIR}/gobgp_client/attribute.proto  ERROR_VARIABLE PROTOC_STDERR RESULT_VARIABLE PROTOC_RETURN_CODE OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(COMMAND ${Protobuf_PROTOC_EXECUTABLE} -I  ${PROJECT_SOURCE_DIR}/gobgp_client --cpp_out=${PROJECT_SOURCE_DIR}/gobgp_client ${PROJECT_SOURCE_DIR}/gobgp_client/gobgp.proto ${PROJECT_SOURCE_DIR}/gobgp_client/attribute.proto ${PROJECT_SOURCE_DIR}/gobgp_client/capability.proto ${PROJECT_SOURCE_DIR}/gobgp_client/common.proto ${PROJECT_SOURCE_DIR}/gobgp_client/extcom.proto ${PROJECT_SOURCE_DIR}/gobgp_client/nlri.proto  ERROR_VARIABLE PROTOC_STDERR RESULT_VARIABLE PROTOC_RETURN_CODE OUTPUT_STRIP_TRAILING_WHITESPACE)
 
-    message(STATUS "Protoc return code for gobgp.proto and attribute.proto Protobuf: ${PROTOC_RETURN_CODE} std err: ${PROTOC_STDERR}")
+    message(STATUS "Protoc return code for gobgp v4 protos Protobuf: ${PROTOC_RETURN_CODE} std err: ${PROTOC_STDERR}")
 
     message(STATUS "Building Protobuf bindings for C++ for Flow Data")
 
@@ -785,6 +785,23 @@ if (ENABLE_GOBGP_SUPPORT)
     target_link_libraries(attribute_pb_cc protobuf::libprotobuf)
 
     target_link_libraries(gobgp_action attribute_pb_cc)
+
+    # GoBGP v4 additional proto files
+    add_library(capability_pb_cc STATIC gobgp_client/capability.pb.cc)
+    target_link_libraries(capability_pb_cc protobuf::libprotobuf)
+    target_link_libraries(gobgp_action capability_pb_cc)
+
+    add_library(common_pb_cc STATIC gobgp_client/common.pb.cc)
+    target_link_libraries(common_pb_cc protobuf::libprotobuf)
+    target_link_libraries(gobgp_action common_pb_cc)
+
+    add_library(extcom_pb_cc STATIC gobgp_client/extcom.pb.cc)
+    target_link_libraries(extcom_pb_cc protobuf::libprotobuf)
+    target_link_libraries(gobgp_action extcom_pb_cc)
+
+    add_library(nlri_pb_cc STATIC gobgp_client/nlri.pb.cc)
+    target_link_libraries(nlri_pb_cc protobuf::libprotobuf)
+    target_link_libraries(gobgp_action nlri_pb_cc)
 
     # FastNetMon API
     add_definitions(-DFASTNETMON_API)    

@@ -57,7 +57,7 @@ class GrpcClient {
     bool AnnounceUnicastPrefixLowLevelIPv6(const IPv6UnicastAnnounce& unicast_ipv6_announce, bool is_withdrawal);
 
     private:
-    std::unique_ptr<apipb::GobgpApi::Stub> stub_;
+    std::unique_ptr<api::GoBgpService::Stub> stub_;
 };
 
 
