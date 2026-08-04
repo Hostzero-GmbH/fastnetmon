@@ -1379,7 +1379,8 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
     }
 
 #ifdef ENABLE_GOBGP
-    if (fastnetmon_global_configuration.gobgp) {
+    // Unicast RTBH (only when ban_action is blackhole)
+    if (fastnetmon_global_configuration.gobgp && current_attack.ban_action == ban_action_t::BAN_ACTION_BLACKHOLE) {
         logger << log4cpp::Priority::INFO << "Call GoBGP for " << action_name << " client started: " << client_ip_as_string;
 
         boost::thread gobgp_thread(gobgp_ban_manage, action_name, ipv6, client_ip, client_ipv6, current_attack);
@@ -1388,7 +1389,7 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
         logger << log4cpp::Priority::INFO << "Call to GoBGP for " << action_name << " client is finished: " << client_ip_as_string;
     }
 
-    // Flowspec enforcement via GoBGP
+    // Flowspec enforcement via GoBGP (for all non-blackhole actions)
     if (fastnetmon_global_configuration.gobgp && current_attack.ban_action != ban_action_t::BAN_ACTION_BLACKHOLE) {
         logger << log4cpp::Priority::INFO << "Call GoBGP flowspec for " << action_name << " client started: " << client_ip_as_string;
 
