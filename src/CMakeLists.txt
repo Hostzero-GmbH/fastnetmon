@@ -819,10 +819,6 @@ if (ENABLE_GOBGP_SUPPORT)
 
     add_executable(fastnetmon_api_client fastnetmon_api_client.cpp)
 
-    if (LINK_WITH_ABSL)
-        target_link_libraries(fastnetmon_api_client  absl::base absl::synchronization)
-    endif()
-
     # We use another way to specify dependencies for Windows as our standard approach clearly does not work
     # https://www.f-ax.de/dev/2020/11/08/grpc-plugin-cmake-support.html
     if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
@@ -837,6 +833,11 @@ if (ENABLE_GOBGP_SUPPORT)
     target_link_libraries(fastnetmon_api_client fastnetmon_pb_cc)
 
     target_link_libraries(fastnetmon_api_client protobuf::libprotobuf)
+
+    # absl must come after gRPC in link order (GNU ld bfd resolves left-to-right)
+    if (LINK_WITH_ABSL)
+        target_link_libraries(fastnetmon_api_client  absl::base absl::synchronization)
+    endif()
 
     if (KAFKA_SUPPORT)
         target_link_libraries(fastnetmon ${LIBKAFKA_CPP_LIBRARY_PATH})
