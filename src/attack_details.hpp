@@ -3,6 +3,8 @@
 #include <boost/serialization/array.hpp>
 #include <boost/serialization/nvp.hpp>
 
+#include "fastnetmon_types.hpp"
+
 // structure with attack details
 class attack_details_t {
     public:
@@ -70,6 +72,11 @@ class attack_details_t {
     std::string get_attack_uuid_as_string() const {
         return boost::uuids::to_string(attack_uuid);
     }
+
+    // Flowspec mitigation action for this attack
+    ban_action_t ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
+    // Rate limit value for flowspec rate-limit action (bytes per second)
+    unsigned int flow_spec_rate_limit = 0;
 };
 
 // TODO: remove it

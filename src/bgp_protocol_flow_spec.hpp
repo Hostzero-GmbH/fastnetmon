@@ -355,6 +355,8 @@ bool decode_native_flow_spec_announce_from_binary_encoded_atributes(std::vector<
 bool encode_bgp_flow_spec_action_as_extended_attribute(const bgp_flow_spec_action_t& bgp_flow_spec_action,
                                                        dynamic_binary_buffer_t& extended_attributes_as_binary_array);
 
+bool encode_bgp_flow_spec_elements_as_mp_nlri(const flow_spec_rule_t& flow_spec_rule, dynamic_binary_buffer_t& mp_nlri_flow_spec);
+
 // It's format of redirect target. So called route target community. Official spec RFC5575 is pretty vague about it:
 // https://datatracker.ietf.org/doc/html/rfc4360#section-4
 // But new BGP Flow Spec clarifies it as https://datatracker.ietf.org/doc/html/rfc8955#name-rt-redirect-rt-redirect-sub

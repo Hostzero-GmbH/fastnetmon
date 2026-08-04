@@ -6,6 +6,8 @@
 
 #include "../bgp_protocol.hpp"
 
+#include "../bgp_protocol_flow_spec.hpp"
+
 #include "../gobgp_client/gobgp_client.hpp"
 
 #include "../fastnetmon_configuration_scheme.hpp"
@@ -295,5 +297,83 @@ void gobgp_ban_manage(const std::string& action,
         gobgp_ban_manage_ipv6(gobgp_client, client_ipv6, is_withdrawal, current_attack);
     } else {
     	gobgp_ban_manage_ipv4(gobgp_client, client_ip, is_withdrawal, current_attack);
+    }
+}
+
+void gobgp_flow_spec_ban_manage(const std::string& action,
+                                bool ipv6,
+                                uint32_t client_ip,
+                                const subnet_ipv6_cidr_mask_t& client_ipv6,
+                                const attack_details_t& current_attack,
+                                ban_action_t ban_action_type,
+                                unsigned int flow_spec_rate) {
+    GrpcClient gobgp_client = GrpcClient(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
+
+    bool is_withdrawal = false;
+
+    if (action == "ban") {
+        is_withdrawal = false;
+    } else {
+        is_withdrawal = true;
+    }
+
+    // Build flowspec rule
+    flow_spec_rule_t flow_spec_rule;
+    flow_spec_rule.generate_uuid();
+
+    if (ipv6) {
+        subnet_ipv6_cidr_mask_t dst_subnet = client_ipv6;
+        dst_subnet.cidr_prefix_length = 128;
+        flow_spec_rule.set_destination_subnet_ipv6(dst_subnet);
+    } else {
+        subnet_cidr_mask_t dst_subnet(client_ip, 32);
+        flow_spec_rule.set_destination_subnet_ipv4(dst_subnet);
+    }
+
+    // Set action based on ban_action_type
+    bgp_flow_spec_action_t bgp_action;
+
+    switch (ban_action_type) {
+        case ban_action_t::BAN_ACTION_FLOW_SPEC_DISCARD:
+            bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_DISCARD);
+            break;
+        case ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT:
+            bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_RATE_LIMIT);
+            bgp_action.set_rate_limit(flow_spec_rate);
+            break;
+        case ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT:
+            bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_REDIRECT);
+            break;
+        default:
+            logger << log4cpp::Priority::ERROR << "Unknown flowspec ban action type, using discard";
+            bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_DISCARD);
+            break;
+    }
+
+    flow_spec_rule.set_action(bgp_action);
+
+    // Build BGP attributes for flowspec announce
+    std::vector<dynamic_binary_buffer_t> bgp_attributes = build_attributes_for_flowspec_announce(flow_spec_rule);
+
+    // Encode NLRI from the flowspec rule
+    dynamic_binary_buffer_t nlri_buffer;
+    bool encode_result = encode_bgp_flow_spec_elements_as_mp_nlri(flow_spec_rule, nlri_buffer);
+
+    if (!encode_result) {
+        logger << log4cpp::Priority::ERROR << "Failed to encode flowspec NLRI for "
+               << (ipv6 ? print_ipv6_cidr_subnet(client_ipv6) : convert_ip_as_uint_to_string(client_ip));
+        return;
+    }
+
+    // Announce via GoBGP with flowspec SAFI
+    unsigned int afi = ipv6 ? AFI_IP6 : AFI_IP;
+    bool result = gobgp_client.AnnounceCommonPrefix(nlri_buffer, bgp_attributes, is_withdrawal, afi, SAFI_FLOW_SPEC_UNICAST);
+
+    if (result) {
+        logger << log4cpp::Priority::INFO << "Flowspec " << action << " for "
+               << (ipv6 ? print_ipv6_cidr_subnet(client_ipv6) : convert_ip_as_uint_to_string(client_ip));
+    } else {
+        logger << log4cpp::Priority::ERROR << "Failed to " << action << " flowspec rule for "
+               << (ipv6 ? print_ipv6_cidr_subnet(client_ipv6) : convert_ip_as_uint_to_string(client_ip));
     }
 }

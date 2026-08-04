@@ -515,6 +515,14 @@ class packed_conntrack_hash_t {
 };
 
 // This class consists of all configuration of global or per subnet ban thresholds
+// Mitigation action for this host group
+enum class ban_action_t : uint32_t {
+    BAN_ACTION_BLACKHOLE = 0,
+    BAN_ACTION_FLOW_SPEC_DISCARD = 1,
+    BAN_ACTION_FLOW_SPEC_RATE_LIMIT = 2,
+    BAN_ACTION_FLOW_SPEC_REDIRECT = 3,
+};
+
 class ban_settings_t {
     public:
     ban_settings_t()
@@ -523,7 +531,8 @@ class ban_settings_t {
       enable_ban_for_udp_pps(false), enable_ban_for_udp_bandwidth(false), enable_ban_for_icmp_pps(false),
       enable_ban_for_icmp_bandwidth(false), ban_threshold_tcp_mbps(0), ban_threshold_tcp_pps(0),
       ban_threshold_udp_mbps(0), ban_threshold_udp_pps(0), ban_threshold_icmp_mbps(0), ban_threshold_icmp_pps(0),
-      ban_threshold_mbps(0), ban_threshold_flows(0), ban_threshold_pps(0) {
+      ban_threshold_mbps(0), ban_threshold_flows(0), ban_threshold_pps(0),
+      ban_action(ban_action_t::BAN_ACTION_BLACKHOLE), flow_spec_rate_limit(0) {
     }
     bool enable_ban;
     bool enable_ban_ipv6;
@@ -553,6 +562,11 @@ class ban_settings_t {
     unsigned int ban_threshold_mbps;
     unsigned int ban_threshold_flows;
     unsigned int ban_threshold_pps;
+
+    // Flowspec mitigation action for this host group
+    ban_action_t ban_action;
+    // Rate limit value in bytes per second (only for FLOW_SPEC_RATE_LIMIT)
+    unsigned int flow_spec_rate_limit;
 };
 
 

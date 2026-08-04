@@ -491,6 +491,27 @@ ban_settings_t read_ban_settings(configuration_map_t configuration_map, std::str
         ban_settings.ban_threshold_flows = convert_string_to_integer(configuration_map[prefix + "threshold_flows"]);
     }
 
+    // Flowspec action configuration
+    if (configuration_map.count(prefix + "ban_action") != 0) {
+        std::string action_str = configuration_map[prefix + "ban_action"];
+
+        if (action_str == "blackhole") {
+            ban_settings.ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
+        } else if (action_str == "flow_spec_discard") {
+            ban_settings.ban_action = ban_action_t::BAN_ACTION_FLOW_SPEC_DISCARD;
+        } else if (action_str == "flow_spec_rate_limit") {
+            ban_settings.ban_action = ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT;
+        } else if (action_str == "flow_spec_redirect") {
+            ban_settings.ban_action = ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT;
+        } else {
+            logger << log4cpp::Priority::ERROR << "Unknown ban_action: " << action_str << " for host group " << host_group_name;
+        }
+    }
+
+    if (configuration_map.count(prefix + "flow_spec_rate_limit") != 0) {
+        ban_settings.flow_spec_rate_limit = convert_string_to_integer(configuration_map[prefix + "flow_spec_rate_limit"]);
+    }
+
     return ban_settings;
 }
 
@@ -1161,6 +1182,59 @@ ban_settings_t get_ban_settings_for_this_subnet(const subnet_cidr_mask_t& subnet
     return hostgroup_settings_itr->second;
 }
 
+// Get ban settings for IPv6 subnet or return global ban settings
+ban_settings_t get_ban_settings_for_this_subnet_ipv6(const subnet_ipv6_cidr_mask_t& subnet, std::string& host_group_name) {
+    extern std::map<subnet_ipv6_cidr_mask_t, std::string> subnet_to_host_groups_ipv6;
+
+    auto host_group_itr = subnet_to_host_groups_ipv6.find(subnet);
+
+    if (host_group_itr == subnet_to_host_groups_ipv6.end()) {
+        host_group_name = "global";
+        return global_ban_settings;
+    }
+
+    host_group_name = host_group_itr->second;
+
+    auto hostgroup_settings_itr = host_group_ban_settings_map.find(host_group_itr->second);
+
+    if (hostgroup_settings_itr == host_group_ban_settings_map.end()) {
+        logger << log4cpp::Priority::ERROR << "We can't find ban settings for IPv6 host group " << host_group_itr->second;
+        return global_ban_settings;
+    }
+
+    return hostgroup_settings_itr->second;
+}
+
+// Get ban settings for a specific IPv4 address (checks per-IP overrides, then host group, then global)
+ban_settings_t get_ban_settings_for_ip(uint32_t client_ip, subnet_cidr_mask_t customer_subnet, std::string& host_group_name) {
+    extern std::map<uint32_t, ban_settings_t> per_ip_ban_overrides_ipv4;
+
+    // Check per-IP override first
+    auto override_itr = per_ip_ban_overrides_ipv4.find(client_ip);
+    if (override_itr != per_ip_ban_overrides_ipv4.end()) {
+        host_group_name = "override";
+        return override_itr->second;
+    }
+
+    // Fall back to host group lookup
+    return get_ban_settings_for_this_subnet(customer_subnet, host_group_name);
+}
+
+// Get ban settings for a specific IPv6 address
+ban_settings_t get_ban_settings_for_ipv6(const subnet_ipv6_cidr_mask_t& client_ip, subnet_ipv6_cidr_mask_t customer_subnet, std::string& host_group_name) {
+    extern std::map<subnet_ipv6_cidr_mask_t, ban_settings_t> per_ip_ban_overrides_ipv6;
+
+    // Check per-IP override first
+    auto override_itr = per_ip_ban_overrides_ipv6.find(client_ip);
+    if (override_itr != per_ip_ban_overrides_ipv6.end()) {
+        host_group_name = "override";
+        return override_itr->second;
+    }
+
+    // Fall back to host group lookup
+    return get_ban_settings_for_this_subnet_ipv6(customer_subnet, host_group_name);
+}
+
 #ifdef REDIS
 void store_data_in_redis(std::string key_name, std::string attack_details) {
     redisReply* reply           = NULL;
@@ -1312,6 +1386,17 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
         gobgp_thread.detach();
 
         logger << log4cpp::Priority::INFO << "Call to GoBGP for " << action_name << " client is finished: " << client_ip_as_string;
+    }
+
+    // Flowspec enforcement via GoBGP
+    if (fastnetmon_global_configuration.gobgp && current_attack.ban_action != ban_action_t::BAN_ACTION_BLACKHOLE) {
+        logger << log4cpp::Priority::INFO << "Call GoBGP flowspec for " << action_name << " client started: " << client_ip_as_string;
+
+        boost::thread gobgp_flowspec_thread(gobgp_flow_spec_ban_manage, action_name, ipv6, client_ip, client_ipv6,
+                                             current_attack, current_attack.ban_action, current_attack.flow_spec_rate_limit);
+        gobgp_flowspec_thread.detach();
+
+        logger << log4cpp::Priority::INFO << "Call to GoBGP flowspec for " << action_name << " client is finished: " << client_ip_as_string;
     }
 #endif
 
@@ -1678,13 +1763,25 @@ void speed_calculation_callback_local_ipv6(const subnet_ipv6_cidr_mask_t& curren
 
     extern blackhole_ban_list_t<subnet_ipv6_cidr_mask_t> ban_list_ipv6;
 
-    // We support only global group
-    std::string host_group_name = "global";
+    // Use per-IP aware lookup (checks per-IP overrides, then host group, then global)
+    std::string host_group_name;
+
+    // Try to find customer network via patricia tree lookup for host group matching
+    subnet_ipv6_cidr_mask_t matched_subnet = current_subnet;
+    // TODO: implement IPv6 patricia "find subnet" lookup (similar to lookup_ip_in_integer_form_inpatricia_and_return_subnet_if_found)
+    // For now, host groups match on customer subnets defined in the config
+    // Per-IP overrides match on the exact /128 IP
+
+    ban_settings_t current_ban_settings = get_ban_settings_for_ipv6(current_subnet, matched_subnet, host_group_name);
+
+    if (!current_ban_settings.enable_ban_ipv6) {
+        return;
+    }
 
     attack_detection_threshold_type_t attack_detection_source;
     attack_detection_direction_type_t attack_detection_direction;
 
-    bool should_ban = we_should_ban_this_entity(current_average_speed_element, global_ban_settings,
+    bool should_ban = we_should_ban_this_entity(current_average_speed_element, current_ban_settings,
                                                 attack_detection_source, attack_detection_direction);
 
     if (!should_ban) {
@@ -1725,6 +1822,10 @@ void speed_calculation_callback_local_ipv6(const subnet_ipv6_cidr_mask_t& curren
 
     attack_details.ipv6 = true;
     // TODO: Also, we should find IPv6 network for attack here
+
+    // Set flowspec mitigation action from host group settings
+    attack_details.ban_action = current_ban_settings.ban_action;
+    attack_details.flow_spec_rate_limit = current_ban_settings.flow_spec_rate_limit;
 
     bool enable_backet_capture =
         packet_buckets_ipv6_storage.enable_packet_capture(current_subnet, attack_details, collection_pattern_t::ONCE);
@@ -1771,7 +1872,7 @@ void speed_calculation_callback_local_ipv4(const uint32_t& client_ip, const subn
     }
 
     std::string host_group_name;
-    ban_settings_t current_ban_settings = get_ban_settings_for_this_subnet(customer_subnet, host_group_name);
+    ban_settings_t current_ban_settings = get_ban_settings_for_ip(client_ip, customer_subnet, host_group_name);
 
     // Hostgroup has blocks disabled
     if (!current_ban_settings.enable_ban) {
@@ -1845,6 +1946,10 @@ void speed_calculation_callback_local_ipv4(const uint32_t& client_ip, const subn
                             global_ban_time);
 
     attack_details.customer_network = customer_subnet;
+
+    // Set flowspec mitigation action from host group settings
+    attack_details.ban_action = current_ban_settings.ban_action;
+    attack_details.flow_spec_rate_limit = current_ban_settings.flow_spec_rate_limit;
 
     bool enable_backet_capture =
         packet_buckets_ipv4_storage.enable_packet_capture(client_ip, attack_details, collection_pattern_t::ONCE);
