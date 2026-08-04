@@ -46,6 +46,9 @@ service Fastnetmon {
 
     // Return per IPv6 host traffic stats
     rpc GetHostCountersV6(GetHostCountersV6Request) returns (stream HostCounter) {}
+
+    // Set per-IP threshold override for a host (creates or updates the per_ip_ban_overrides map)
+    rpc SetThreshold(SetThresholdRequest) returns (SetThresholdReply) {}
 }
 
 // We will reuse these enums all the way around
@@ -231,5 +234,22 @@ message ExecuteBanRequest {
 
 message ExecuteBanReply {
     bool result = 1;
+}
+
+message SetThresholdRequest {
+    string ip_address = 1;
+    // Optional threshold fields (0 = no change / remove override)
+    uint32 threshold_mbps = 2;
+    uint32 threshold_pps = 3;
+    uint32 threshold_flows = 4;
+    // Flowspec action
+    string ban_action = 5;
+    // Rate limit in bytes/sec
+    uint32 flow_spec_rate_limit = 6;
+}
+
+message SetThresholdReply {
+    bool success = 1;
+    string error_message = 2;
 }
 

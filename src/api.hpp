@@ -27,4 +27,8 @@ class FastnetmonApiServiceImpl final : public fastnetmoninternal::Fastnetmon::Se
                                              const ::fastnetmoninternal::GetTotalTrafficCountersRequest* request,
                                              ::grpc::ServerWriter<::fastnetmoninternal::SixtyFourNamedCounter>* writer) override;
 
+    ::grpc::Status SetThreshold(::grpc::ServerContext* context,
+                                const ::fastnetmoninternal::SetThresholdRequest* request,
+                                ::fastnetmoninternal::SetThresholdReply* reply) override;
+
 };

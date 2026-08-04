@@ -504,4 +504,92 @@ FastnetmonApiServiceImpl::GetTotalTrafficCountersV4([[maybe_unused]] ::grpc::Ser
     return grpc::Status::OK;
 }
 
+::grpc::Status
+FastnetmonApiServiceImpl::SetThreshold(::grpc::ServerContext* context,
+                                        const ::fastnetmoninternal::SetThresholdRequest* request,
+                                        ::fastnetmoninternal::SetThresholdReply* reply) {
+    extern std::map<uint32_t, ban_settings_t> per_ip_ban_overrides_ipv4;
+    extern std::map<subnet_ipv6_cidr_mask_t, ban_settings_t> per_ip_ban_overrides_ipv6;
 
+    std::string ip_str = request->ip_address();
+
+    if (!validate_ipv6_or_ipv4_host(ip_str)) {
+        reply->set_success(false);
+        reply->set_error_message("Invalid IP address format");
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Malformed IP address");
+    }
+
+    ban_settings_t settings;
+    bool has_any_setting = false;
+
+    if (request->threshold_mbps() > 0) {
+        settings.enable_ban = true;
+        settings.enable_ban_for_bandwidth = true;
+        settings.ban_threshold_mbps = request->threshold_mbps();
+        has_any_setting = true;
+    }
+    if (request->threshold_pps() > 0) {
+        settings.enable_ban = true;
+        settings.enable_ban_for_pps = true;
+        settings.ban_threshold_pps = request->threshold_pps();
+        has_any_setting = true;
+    }
+    if (request->threshold_flows() > 0) {
+        settings.enable_ban = true;
+        settings.enable_ban_for_flows_per_second = true;
+        settings.ban_threshold_flows = request->threshold_flows();
+        has_any_setting = true;
+    }
+
+    if (!request->ban_action().empty()) {
+        std::string action_str = request->ban_action();
+        if (action_str == "flow_spec_discard") {
+            settings.ban_action = ban_action_t::BAN_ACTION_FLOW_SPEC_DISCARD;
+        } else if (action_str == "flow_spec_rate_limit") {
+            settings.ban_action = ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT;
+        } else if (action_str == "flow_spec_redirect") {
+            settings.ban_action = ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT;
+        } else if (action_str == "blackhole") {
+            settings.ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
+        } else {
+            reply->set_success(false);
+            reply->set_error_message("Unknown ban_action: " + action_str);
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Unknown ban_action");
+        }
+        has_any_setting = true;
+    }
+
+    if (request->flow_spec_rate_limit() > 0) {
+        settings.flow_spec_rate_limit = request->flow_spec_rate_limit();
+        has_any_setting = true;
+    }
+
+    if (!has_any_setting) {
+        reply->set_success(false);
+        reply->set_error_message("No threshold values provided");
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "No threshold values");
+    }
+
+    // Try IPv4
+    uint32_t ipv4_int = 0;
+    if (convert_ip_as_string_to_uint_safe(ip_str, ipv4_int)) {
+        per_ip_ban_overrides_ipv4[ipv4_int] = settings;
+        logger << log4cpp::Priority::INFO << "API: Set threshold override for " << ip_str;
+        reply->set_success(true);
+        return grpc::Status::OK;
+    }
+
+    // Try IPv6
+    subnet_ipv6_cidr_mask_t ipv6_subnet;
+    if (read_ipv6_host_from_string(ip_str, ipv6_subnet.subnet_address)) {
+        ipv6_subnet.cidr_prefix_length = 128;
+        per_ip_ban_overrides_ipv6[ipv6_subnet] = settings;
+        logger << log4cpp::Priority::INFO << "API: Set threshold override for " << ip_str;
+        reply->set_success(true);
+        return grpc::Status::OK;
+    }
+
+    reply->set_success(false);
+    reply->set_error_message("Failed to parse IP address");
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Failed to parse IP address");
+}
