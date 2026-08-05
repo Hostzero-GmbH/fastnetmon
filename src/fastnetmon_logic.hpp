@@ -14,6 +14,9 @@
 std::string get_amplification_attack_type(amplification_attack_type_t attack_type);
 std::string generate_flow_spec_for_amplification_attack(amplification_attack_type_t amplification_attack_type, std::string destination_ip);
 
+// Escalation checker thread: FlowSpec-first, RTBH fallback
+void escalation_checker_thread();
+
 bool we_should_ban_this_entity(const subnet_counter_t& average_speed_element,
                                const ban_settings_t& current_ban_settings,
                                attack_detection_threshold_type_t& attack_detection_source,

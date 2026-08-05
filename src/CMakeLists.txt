@@ -406,6 +406,13 @@ add_library(iana_ip_protocols STATIC iana_ip_protocols.cpp)
 add_library(bgp_protocol_flow_spec STATIC bgp_protocol_flow_spec.cpp)
 target_link_libraries(bgp_protocol_flow_spec iana_ip_protocols bgp_protocol)
 
+# Escalation manager: FlowSpec-first, RTBH as fallback
+add_library(escalation_manager STATIC escalation_manager.cpp)
+target_link_libraries(escalation_manager fast_library)
+
+# Link escalation manager into main executable
+target_link_libraries(fastnetmon escalation_manager)
+
 # Our filtering library
 add_library(filter STATIC filter.cpp)
 target_link_libraries(filter bgp_protocol bgp_protocol_flow_spec)
