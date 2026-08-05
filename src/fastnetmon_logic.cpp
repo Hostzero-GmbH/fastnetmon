@@ -1553,31 +1553,24 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
 
         // Register with escalation manager when deploying FlowSpec and escalation is enabled
         if (attack_action == attack_action_t::ban && global_escalation_config.enabled) {
-            // The thresholds that triggered this attack are stored in current_attack,
-            // but they aren't directly tracked in attack_details_t. We derive them
-            // from the counter we have. For escalation tracking we store what we can.
-            // The actual threshold values are read from ban_settings at registration time.
-            uint64_t threshold_pps = 0;
-            uint64_t threshold_mbps = 0;
-            uint64_t threshold_flows = 0;
-
-            // Look up the ban settings for this host to get thresholds
-            subnet_cidr_mask_t customer_subnet;
-            if (!ipv6) {
-                lookup_ip_in_integer_form_inpatricia_and_return_subnet_if_found(lookup_tree_ipv4, client_ip, customer_subnet);
+            // Use the traffic counters from detection time as the reference threshold.
+            // current_attack.traffic_counters contains the speed that triggered the attack.
+            // We compare future traffic against these values to decide escalation.
+            direction_t dir = current_attack.attack_direction;
+            uint64_t detect_pps = 0;
+            uint64_t detect_bps = 0;
+            if (dir == INCOMING || dir == OTHER) {
+                detect_pps = current_attack.traffic_counters.total.in_packets;
+                detect_bps = current_attack.traffic_counters.total.in_bytes * 8;
             }
-            std::string host_group_name;
-            ban_settings_t ban_settings = get_ban_settings_for_ip(client_ip, customer_subnet, host_group_name);
-            if (ipv6) {
-                ban_settings = get_ban_settings_for_ipv6(client_ipv6, subnet_ipv6_cidr_mask_t{}, host_group_name);
+            if (dir == OUTGOING || dir == OTHER) {
+                detect_pps = std::max(detect_pps, current_attack.traffic_counters.total.out_packets);
+                detect_bps = std::max(detect_bps, current_attack.traffic_counters.total.out_bytes * 8);
             }
-            threshold_pps = ban_settings.ban_threshold_pps;
-            threshold_mbps = ban_settings.ban_threshold_mbps;
-            threshold_flows = ban_settings.ban_threshold_flows;
 
             global_escalation_manager.register_flowspec(
                 client_ip_as_string, ipv6, current_attack,
-                threshold_pps, threshold_mbps, threshold_flows);
+                detect_pps, detect_bps / 1000000, 0);
         }
     }
 #endif
