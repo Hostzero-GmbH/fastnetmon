@@ -397,7 +397,7 @@ bool GrpcClient::AnnounceFlowSpecPrefix(const flow_spec_rule_t& flow_spec_rule,
     {
         api::Attribute* attr = current_path->add_pattrs();
         api::OriginAttribute* origin = new api::OriginAttribute;
-        origin->set_origin(2); // BGP_ORIGIN_INCOMPLETE
+        origin->set_origin(0); // BGP_ORIGIN_IGP
         attr->set_allocated_origin(origin);
     }
 
