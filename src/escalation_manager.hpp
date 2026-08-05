@@ -62,6 +62,9 @@ class escalation_manager_t {
     // Mark an IP as escalated to RTBH (called by the escalation checker)
     void mark_rtbh(const std::string& ip_as_string);
 
+    // Step down from RTBH back to FlowSpec stage (de-escalation)
+    void step_down_to_flowspec(const std::string& ip_as_string);
+
     // Remove an IP from escalation tracking entirely (unban/cleanup)
     void remove(const std::string& ip_as_string);
 
@@ -100,6 +103,9 @@ struct escalation_config_t {
     // escalation to RTBH. e.g. 80 means "if attack still exceeds 80% of the
     // threshold that triggered it, escalate to RTBH".
     unsigned int rtbh_threshold_ratio = 80;
+
+    // BGP community for the escalation RTBH route (RFC 7999 default)
+    std::string rtbh_community = "65535:666";
 };
 
 extern escalation_config_t global_escalation_config;

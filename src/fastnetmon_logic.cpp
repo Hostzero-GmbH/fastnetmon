@@ -1049,7 +1049,8 @@ void escalation_checker_thread() {
                 client_ipv6.cidr_prefix_length = 128;
             }
 
-            gobgp_ban_manage("ban", is_ipv6, client_ip_int, client_ipv6, rtbh_details);
+            gobgp_ban_manage("ban", is_ipv6, client_ip_int, client_ipv6, rtbh_details,
+                              global_escalation_config.rtbh_community);
 #else
             logger << log4cpp::Priority::WARN
                    << "Escalation: GoBGP not available, cannot deploy RTBH for "
@@ -1535,7 +1536,9 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
     if (fastnetmon_global_configuration.gobgp && current_attack.ban_action == ban_action_t::BAN_ACTION_BLACKHOLE) {
         logger << log4cpp::Priority::INFO << "Call GoBGP for " << action_name << " client started: " << client_ip_as_string;
 
-        boost::thread gobgp_thread(gobgp_ban_manage, action_name, ipv6, client_ip, client_ipv6, current_attack);
+        boost::thread gobgp_thread(
+            boost::bind(gobgp_ban_manage, action_name, ipv6, client_ip, client_ipv6,
+                        current_attack, ""));
         gobgp_thread.detach();
 
         logger << log4cpp::Priority::INFO << "Call to GoBGP for " << action_name << " client is finished: " << client_ip_as_string;
@@ -1577,6 +1580,35 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
 
     // Remove from escalation tracking on unban
     if (attack_action == attack_action_t::unban && global_escalation_config.enabled) {
+        escalation_stage_t stage = global_escalation_manager.get_stage(client_ip_as_string);
+
+        if (stage == escalation_stage_t::RTBH) {
+            // Step down: withdraw RTBH route, keep FlowSpec, keep monitoring.
+            // The unicast RTBH was deployed by the escalation checker with
+            // BAN_ACTION_BLACKHOLE, but current_attack.ban_action is still the
+            // original FlowSpec type. We need to explicitly withdraw the RTBH.
+#ifdef ENABLE_GOBGP
+            attack_details_t rtbh_withdrawal = current_attack;
+            rtbh_withdrawal.ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
+            std::string rtbh_comm = global_escalation_config.rtbh_community;
+            boost::thread rtbh_withdraw_thread(
+                boost::bind(gobgp_ban_manage, "unban", ipv6, client_ip, client_ipv6,
+                            rtbh_withdrawal, rtbh_comm));
+            rtbh_withdraw_thread.detach();
+#endif
+            // Step back to FlowSpec stage (RTBH withdrawn, FlowSpec stays)
+            global_escalation_manager.step_down_to_flowspec(client_ip_as_string);
+
+            logger << log4cpp::Priority::INFO
+                   << "Escalation: stepped down from RTBH to FlowSpec for "
+                   << client_ip_as_string;
+
+            // Return early: don't withdraw FlowSpec, don't remove tracking,
+            // don't run unban hooks. The IP stays in the ban list.
+            return;
+        }
+
+        // FlowSpec stage or untracked: normal full unban
         global_escalation_manager.remove(client_ip_as_string);
     }
 

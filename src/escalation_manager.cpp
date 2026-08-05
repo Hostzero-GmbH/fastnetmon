@@ -60,6 +60,19 @@ void escalation_manager_t::remove(const std::string& ip_as_string) {
     }
 }
 
+void escalation_manager_t::step_down_to_flowspec(const std::string& ip_as_string) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it = entries_.find(ip_as_string);
+    if (it != entries_.end() && it->second.stage == escalation_stage_t::RTBH) {
+        it->second.stage = escalation_stage_t::FLOWSPEC;
+        // Reset the deploy timestamp so the escalation checker waits
+        // a full check_interval before re-escalating
+        it->second.flowspec_deploy_time = std::time(nullptr);
+        logger << log4cpp::Priority::INFO << "Escalation: stepped down " << ip_as_string << " from RTBH to FlowSpec";
+    }
+}
+
 escalation_stage_t escalation_manager_t::get_stage(const std::string& ip_as_string) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -125,9 +138,14 @@ void read_escalation_config() {
         }
     }
 
+    if (configuration_map.count("escalation_rtbh_community") != 0) {
+        global_escalation_config.rtbh_community = configuration_map["escalation_rtbh_community"];
+    }
+
     if (global_escalation_config.enabled) {
         logger << log4cpp::Priority::INFO << "Escalation enabled: check_interval="
                << global_escalation_config.check_interval << "s, rtbh_threshold_ratio="
-               << global_escalation_config.rtbh_threshold_ratio << "%";
+               << global_escalation_config.rtbh_threshold_ratio << "%, rtbh_community="
+               << global_escalation_config.rtbh_community;
     }
 }

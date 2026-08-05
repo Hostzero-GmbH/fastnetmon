@@ -5,7 +5,7 @@
 class FastnetmonPlatformConfigurtion {
     public:
 
-    std::string fastnetmon_version = "1.2.10 c432c377";
+    std::string fastnetmon_version = "1.2.10 e7da0ad1";
 
     std::string pid_path = "/var/run/fastnetmon.pid";
     std::string global_config_path = "/etc/fastnetmon.conf";
