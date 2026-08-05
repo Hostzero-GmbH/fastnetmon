@@ -2184,7 +2184,7 @@ int main(int argc, char** argv) {
     }
 
     // Start escalation checker thread (FlowSpec-first, RTBH fallback)
-    if (fastnetmon_global_configuration.escalation_enabled) {
+    if (global_escalation_config.enabled) {
         service_thread_group.add_thread(new boost::thread(escalation_checker_thread));
     }
 
