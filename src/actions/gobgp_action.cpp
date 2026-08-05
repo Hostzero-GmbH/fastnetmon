@@ -339,7 +339,8 @@ void gobgp_flow_spec_ban_manage(const std::string& action,
             break;
         case ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT:
             bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_RATE_LIMIT);
-            bgp_action.set_rate_limit(flow_spec_rate);
+            // Config value is in bits/second, FlowSpec expects bytes/second
+            bgp_action.set_rate_limit(flow_spec_rate / 8);
             break;
         case ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT:
             bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_REDIRECT);

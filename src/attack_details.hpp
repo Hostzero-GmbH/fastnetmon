@@ -75,7 +75,7 @@ class attack_details_t {
 
     // Flowspec mitigation action for this attack
     ban_action_t ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
-    // Rate limit value for flowspec rate-limit action (bytes per second)
+    // Rate limit value for flowspec rate-limit action (bits per second, e.g. 1000000 = 1 Mbps)
     unsigned int flow_spec_rate_limit = 0;
 };
 
