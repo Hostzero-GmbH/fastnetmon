@@ -354,7 +354,12 @@ void gobgp_flow_spec_ban_manage(const std::string& action,
 
     // Announce via GoBGP v4 typed API (no manual binary encoding needed)
     unsigned int afi = ipv6 ? AFI_IP6 : AFI_IP;
-    bool result = gobgp_client.AnnounceFlowSpecPrefix(flow_spec_rule, is_withdrawal, afi);
+
+    // Read next hop from config (defaults to 0.0.0.0 which GoBGP v4 accepts)
+    uint32_t next_hop_numeric = 0;
+    convert_ip_as_string_to_uint_safe(fastnetmon_global_configuration.gobgp_next_hop, next_hop_numeric);
+
+    bool result = gobgp_client.AnnounceFlowSpecPrefix(flow_spec_rule, is_withdrawal, afi, next_hop_numeric);
 
     if (result) {
         logger << log4cpp::Priority::INFO << "Flowspec " << action << " for "

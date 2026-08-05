@@ -290,7 +290,8 @@ bool GrpcClient::AnnounceUnicastPrefixLowLevelIPv6(const IPv6UnicastAnnounce& un
 // Announce flowspec rule using GoBGP v4 typed protobuf API
 bool GrpcClient::AnnounceFlowSpecPrefix(const flow_spec_rule_t& flow_spec_rule,
                                          bool is_withdrawal,
-                                         unsigned int afi) {
+                                         unsigned int afi,
+                                         uint32_t next_hop) {
     api::Path* current_path = new api::Path;
     current_path->set_is_withdraw(is_withdrawal);
 
@@ -398,6 +399,18 @@ bool GrpcClient::AnnounceFlowSpecPrefix(const flow_spec_rule_t& flow_spec_rule,
         api::OriginAttribute* origin = new api::OriginAttribute;
         origin->set_origin(2); // BGP_ORIGIN_INCOMPLETE
         attr->set_allocated_origin(origin);
+    }
+
+    // Next hop attribute (required by GoBGP v4 for non-withdrawal paths)
+    if (!is_withdrawal) {
+        api::Attribute* attr = current_path->add_pattrs();
+        api::NextHopAttribute* nh = new api::NextHopAttribute;
+        if (next_hop != 0) {
+            nh->set_next_hop(convert_ip_as_uint_to_string(next_hop));
+        } else {
+            nh->set_next_hop("0.0.0.0");
+        }
+        attr->set_allocated_next_hop(nh);
     }
 
     // Extended community action (only for announcements)

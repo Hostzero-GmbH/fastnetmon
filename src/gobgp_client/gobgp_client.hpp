@@ -58,10 +58,12 @@ class GrpcClient {
     bool AnnounceUnicastPrefixLowLevelIPv4(const IPv4UnicastAnnounce& unicast_ipv4_announce, bool is_withdrawal);
     bool AnnounceUnicastPrefixLowLevelIPv6(const IPv6UnicastAnnounce& unicast_ipv6_announce, bool is_withdrawal);
 
-    // Announce flowspec rule using typed protobuf API (GoBGP v4+)
+    // Announce flowspec rule using GoBGP v4 typed protobuf API
+    // next_hop: IPv4 address for the next hop (required by GoBGP v4)
     bool AnnounceFlowSpecPrefix(const flow_spec_rule_t& flow_spec_rule,
                                 bool is_withdrawal,
-                                unsigned int afi);
+                                unsigned int afi,
+                                uint32_t next_hop = 0);
 
     private:
     std::unique_ptr<api::GoBgpService::Stub> stub_;
