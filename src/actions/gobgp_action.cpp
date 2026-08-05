@@ -352,22 +352,9 @@ void gobgp_flow_spec_ban_manage(const std::string& action,
 
     flow_spec_rule.set_action(bgp_action);
 
-    // Build BGP attributes for flowspec announce
-    std::vector<dynamic_binary_buffer_t> bgp_attributes = build_attributes_for_flowspec_announce(flow_spec_rule);
-
-    // Encode NLRI from the flowspec rule
-    dynamic_binary_buffer_t nlri_buffer;
-    bool encode_result = encode_bgp_flow_spec_elements_as_mp_nlri(flow_spec_rule, nlri_buffer);
-
-    if (!encode_result) {
-        logger << log4cpp::Priority::ERROR << "Failed to encode flowspec NLRI for "
-               << (ipv6 ? print_ipv6_cidr_subnet(client_ipv6) : convert_ip_as_uint_to_string(client_ip));
-        return;
-    }
-
-    // Announce via GoBGP with flowspec SAFI
+    // Announce via GoBGP v4 typed API (no manual binary encoding needed)
     unsigned int afi = ipv6 ? AFI_IP6 : AFI_IP;
-    bool result = gobgp_client.AnnounceCommonPrefix(nlri_buffer, bgp_attributes, is_withdrawal, afi, SAFI_FLOW_SPEC_UNICAST);
+    bool result = gobgp_client.AnnounceFlowSpecPrefix(flow_spec_rule, is_withdrawal, afi);
 
     if (result) {
         logger << log4cpp::Priority::INFO << "Flowspec " << action << " for "

@@ -287,3 +287,174 @@ bool GrpcClient::AnnounceUnicastPrefixLowLevelIPv6(const IPv6UnicastAnnounce& un
     return AnnounceCommonPrefix(ipv6_nlri, bgp_attributes, is_withdrawal, AFI_IP6, SAFI_UNICAST);
 }
 
+// Announce flowspec rule using GoBGP v4 typed protobuf API
+bool GrpcClient::AnnounceFlowSpecPrefix(const flow_spec_rule_t& flow_spec_rule,
+                                         bool is_withdrawal,
+                                         unsigned int afi) {
+    api::Path* current_path = new api::Path;
+    current_path->set_is_withdraw(is_withdrawal);
+
+    // Build typed NLRI on heap
+    api::NLRI* nlri = new api::NLRI;
+    api::FlowSpecNLRI* flow_spec_nlri = new api::FlowSpecNLRI;
+
+    // Destination prefix (IPv4)
+    if (flow_spec_rule.destination_subnet_ipv4_used) {
+        api::FlowSpecRule* rule = flow_spec_nlri->add_rules();
+        api::FlowSpecIPPrefix* ip_prefix = new api::FlowSpecIPPrefix;
+        ip_prefix->set_type(1);
+        subnet_cidr_mask_t dest = flow_spec_rule.destination_subnet_ipv4;
+        ip_prefix->set_prefix(convert_ip_as_uint_to_string(dest.subnet_address));
+        ip_prefix->set_prefix_len(dest.cidr_prefix_length);
+        rule->set_allocated_ip_prefix(ip_prefix);
+    }
+
+    // Destination prefix (IPv6)
+    if (flow_spec_rule.destination_subnet_ipv6_used) {
+        api::FlowSpecRule* rule = flow_spec_nlri->add_rules();
+        api::FlowSpecIPPrefix* ip_prefix = new api::FlowSpecIPPrefix;
+        ip_prefix->set_type(1);
+        ip_prefix->set_prefix(print_ipv6_address(flow_spec_rule.destination_subnet_ipv6.subnet_address));
+        ip_prefix->set_prefix_len(flow_spec_rule.destination_subnet_ipv6.cidr_prefix_length);
+        rule->set_allocated_ip_prefix(ip_prefix);
+    }
+
+    // Source prefix (IPv4)
+    if (flow_spec_rule.source_subnet_ipv4_used) {
+        api::FlowSpecRule* rule = flow_spec_nlri->add_rules();
+        api::FlowSpecIPPrefix* ip_prefix = new api::FlowSpecIPPrefix;
+        ip_prefix->set_type(2);
+        subnet_cidr_mask_t src = flow_spec_rule.source_subnet_ipv4;
+        ip_prefix->set_prefix(convert_ip_as_uint_to_string(src.subnet_address));
+        ip_prefix->set_prefix_len(src.cidr_prefix_length);
+        rule->set_allocated_ip_prefix(ip_prefix);
+    }
+
+    // Source prefix (IPv6)
+    if (flow_spec_rule.source_subnet_ipv6_used) {
+        api::FlowSpecRule* rule = flow_spec_nlri->add_rules();
+        api::FlowSpecIPPrefix* ip_prefix = new api::FlowSpecIPPrefix;
+        ip_prefix->set_type(2);
+        ip_prefix->set_prefix(print_ipv6_address(flow_spec_rule.source_subnet_ipv6.subnet_address));
+        ip_prefix->set_prefix_len(flow_spec_rule.source_subnet_ipv6.cidr_prefix_length);
+        rule->set_allocated_ip_prefix(ip_prefix);
+    }
+
+    // Helper lambda to add a numeric component
+    auto add_component = [&](uint32_t comp_type, const std::vector<uint16_t>& values) {
+        if (values.empty()) return;
+        api::FlowSpecRule* rule = flow_spec_nlri->add_rules();
+        api::FlowSpecComponent* component = new api::FlowSpecComponent;
+        component->set_type(comp_type);
+        for (size_t i = 0; i < values.size(); i++) {
+            api::FlowSpecComponentItem* item = component->add_items();
+            uint8_t op = 0x01; // OP_EQ
+            if (i == values.size() - 1) op |= 0x80; // OP_END
+            item->set_op(op);
+            item->set_value(values[i]);
+        }
+        rule->set_allocated_component(component);
+    };
+
+    // IP protocols
+    if (flow_spec_rule.protocols.size() > 0) {
+        api::FlowSpecRule* rule = flow_spec_nlri->add_rules();
+        api::FlowSpecComponent* component = new api::FlowSpecComponent;
+        component->set_type(3);
+        for (size_t i = 0; i < flow_spec_rule.protocols.size(); i++) {
+            api::FlowSpecComponentItem* item = component->add_items();
+            uint8_t op = 0x01;
+            if (i == flow_spec_rule.protocols.size() - 1) op |= 0x80;
+            item->set_op(op);
+            item->set_value(static_cast<uint8_t>(
+                static_cast<std::underlying_type<ip_protocol_t>::type>(flow_spec_rule.protocols[i])));
+        }
+        rule->set_allocated_component(component);
+    }
+
+    add_component(5, flow_spec_rule.destination_ports);
+    add_component(6, flow_spec_rule.source_ports);
+
+    nlri->set_allocated_flow_spec(flow_spec_nlri);
+    current_path->set_allocated_nlri(nlri);
+
+    // Build family on heap
+    api::Family* route_family = new api::Family;
+    if (afi == AFI_IP) {
+        route_family->set_afi(api::Family::AFI_IP);
+    } else if (afi == AFI_IP6) {
+        route_family->set_afi(api::Family::AFI_IP6);
+    } else {
+        logger << log4cpp::Priority::ERROR << "Unknown AFI for flowspec";
+        delete current_path;
+        return false;
+    }
+    route_family->set_safi(api::Family::SAFI_FLOW_SPEC_UNICAST);
+    current_path->set_allocated_family(route_family);
+
+    // Origin attribute (INCOMPLETE)
+    {
+        api::Attribute* attr = current_path->add_pattrs();
+        api::OriginAttribute* origin = new api::OriginAttribute;
+        origin->set_origin(2); // BGP_ORIGIN_INCOMPLETE
+        attr->set_allocated_origin(origin);
+    }
+
+    // Extended community action (only for announcements)
+    if (!is_withdrawal) {
+        bgp_flow_spec_action_t bgp_action = flow_spec_rule.get_action();
+        api::Attribute* ext_attr = current_path->add_pattrs();
+        api::ExtendedCommunitiesAttribute* ext_comms = new api::ExtendedCommunitiesAttribute;
+
+        switch (bgp_action.get_type()) {
+            case bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_DISCARD: {
+                api::ExtendedCommunity* comm = ext_comms->add_communities();
+                api::TrafficRateExtended* rate = new api::TrafficRateExtended;
+                rate->set_rate(0.0f);
+                comm->set_allocated_traffic_rate(rate);
+                break;
+            }
+            case bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_RATE_LIMIT: {
+                api::ExtendedCommunity* comm = ext_comms->add_communities();
+                api::TrafficRateExtended* rate = new api::TrafficRateExtended;
+                rate->set_rate(static_cast<float>(bgp_action.get_rate_limit()));
+                comm->set_allocated_traffic_rate(rate);
+                break;
+            }
+            case bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_REDIRECT: {
+                api::ExtendedCommunity* comm = ext_comms->add_communities();
+                api::RedirectTwoOctetAsSpecificExtended* redirect = new api::RedirectTwoOctetAsSpecificExtended;
+                redirect->set_asn(0);
+                redirect->set_local_admin(0);
+                comm->set_allocated_redirect_two_octet_as_specific(redirect);
+                break;
+            }
+            default:
+                break;
+        }
+
+        ext_attr->set_allocated_extended_communities(ext_comms);
+    }
+
+    // Send request
+    api::AddPathRequest request;
+    request.set_table_type(api::TableType::TABLE_TYPE_GLOBAL);
+    request.set_allocated_path(current_path);
+
+    grpc::ClientContext context;
+    std::chrono::system_clock::time_point deadline =
+        std::chrono::system_clock::now() + std::chrono::seconds(gobgp_client_connection_timeout);
+    context.set_deadline(deadline);
+
+    api::AddPathResponse response;
+    auto status = stub_->AddPath(&context, request, &response);
+
+    if (!status.ok()) {
+        logger << log4cpp::Priority::ERROR << "AddPath request to BGP daemon failed with code: " << status.error_code()
+               << " message " << status.error_message();
+        return false;
+    }
+
+    return true;
+}
+

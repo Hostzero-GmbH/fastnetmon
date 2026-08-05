@@ -7,6 +7,8 @@
 
 #include "../fastnetmon_networks.hpp"
 
+#include "../bgp_protocol_flow_spec.hpp"
+
 //
 // MinGW has quite weird definitions which clash with field names in gRPC bindinds
 // We need to apply some trickery to avoid complilation errors: 
@@ -55,6 +57,11 @@ class GrpcClient {
                               unsigned int safi);
     bool AnnounceUnicastPrefixLowLevelIPv4(const IPv4UnicastAnnounce& unicast_ipv4_announce, bool is_withdrawal);
     bool AnnounceUnicastPrefixLowLevelIPv6(const IPv6UnicastAnnounce& unicast_ipv6_announce, bool is_withdrawal);
+
+    // Announce flowspec rule using typed protobuf API (GoBGP v4+)
+    bool AnnounceFlowSpecPrefix(const flow_spec_rule_t& flow_spec_rule,
+                                bool is_withdrawal,
+                                unsigned int afi);
 
     private:
     std::unique_ptr<api::GoBgpService::Stub> stub_;
