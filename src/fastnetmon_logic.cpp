@@ -2039,6 +2039,9 @@ void speed_calculation_callback_local_ipv6(const subnet_ipv6_cidr_mask_t& curren
     attack_details.ban_action = current_ban_settings.ban_action;
     attack_details.flow_spec_rate_limit = current_ban_settings.flow_spec_rate_limit;
 
+    // Generate a unique UUID for this attack
+    attack_details.generate_uuid();
+
     bool enable_backet_capture =
         packet_buckets_ipv6_storage.enable_packet_capture(current_subnet, attack_details, collection_pattern_t::ONCE);
 
@@ -2162,6 +2165,9 @@ void speed_calculation_callback_local_ipv4(const uint32_t& client_ip, const subn
     // Set flowspec mitigation action from host group settings
     attack_details.ban_action = current_ban_settings.ban_action;
     attack_details.flow_spec_rate_limit = current_ban_settings.flow_spec_rate_limit;
+
+    // Generate a unique UUID for this attack
+    attack_details.generate_uuid();
 
     bool enable_backet_capture =
         packet_buckets_ipv4_storage.enable_packet_capture(client_ip, attack_details, collection_pattern_t::ONCE);
@@ -3666,6 +3672,31 @@ void add_banned_routes_to_prometheus(std::stringstream& output) {
     output << "# HELP fastnetmon_banned_routes_total Total number of currently banned routes\n";
     output << "# TYPE fastnetmon_banned_routes_total gauge\n";
 
+    // Resolve the live mitigation type for a banned IP. Prefer the escalation
+    // manager stage, which reflects the current state (FlowSpec may have been
+    // promoted to RTBH after ban). Fall back to the ban-time action only when
+    // escalation is disabled or the IP is not tracked.
+    auto get_mitigation_type = [](const std::string& escalation_key,
+                                  const attack_details_t& details) {
+        if (global_escalation_config.enabled) {
+            escalation_stage_t stage = global_escalation_manager.get_stage(escalation_key);
+            if (stage == escalation_stage_t::RTBH) {
+                return std::string("rtbh");
+            }
+            if (stage == escalation_stage_t::FLOWSPEC) {
+                return std::string("flowspec");
+            }
+        }
+
+        switch (details.ban_action) {
+            case ban_action_t::BAN_ACTION_BLACKHOLE: return std::string("rtbh");
+            case ban_action_t::BAN_ACTION_FLOW_SPEC_DISCARD:
+            case ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT:
+            case ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT: return std::string("flowspec");
+            default: return std::string("unknown");
+        }
+    };
+
     // IPv4 banned routes
     {
         std::map<uint32_t, attack_details_t> ban_list_copy;
@@ -3676,9 +3707,11 @@ void add_banned_routes_to_prometheus(std::stringstream& output) {
             output << "fastnetmon_banned_routes{ip=\"" << ip
                    << "\",protocol_version=\"ipv4\",host_group=\""
                    << itr.second.host_group << "\",attack_uuid=\""
-                   << itr.second.get_attack_uuid_as_string() << "\"} 1\n";
+                   << itr.second.get_attack_uuid_as_string()
+                   << "\",mitigation_type=\"" << get_mitigation_type(ip, itr.second) << "\"} 1\n";
             output << "fastnetmon_banned_routes_ban_timestamp_seconds{ip=\"" << ip
-                   << "\",protocol_version=\"ipv4\"} "
+                   << "\",protocol_version=\"ipv4\",mitigation_type=\""
+                   << get_mitigation_type(ip, itr.second) << "\"} "
                    << itr.second.ban_timestamp << "\n";
         }
 
@@ -3696,9 +3729,11 @@ void add_banned_routes_to_prometheus(std::stringstream& output) {
             output << "fastnetmon_banned_routes{ip=\"" << ip
                    << "\",protocol_version=\"ipv6\",host_group=\""
                    << itr.second.host_group << "\",attack_uuid=\""
-                   << itr.second.get_attack_uuid_as_string() << "\"} 1\n";
+                   << itr.second.get_attack_uuid_as_string()
+                   << "\",mitigation_type=\"" << get_mitigation_type(ip, itr.second) << "\"} 1\n";
             output << "fastnetmon_banned_routes_ban_timestamp_seconds{ip=\"" << ip
-                   << "\",protocol_version=\"ipv6\"} "
+                   << "\",protocol_version=\"ipv6\",mitigation_type=\""
+                   << get_mitigation_type(ip, itr.second) << "\"} "
                    << itr.second.ban_timestamp << "\n";
         }
 
