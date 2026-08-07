@@ -72,7 +72,8 @@ void gobgp_action_shutdown() {
 void gobgp_ban_manage_ipv6(GrpcClient& gobgp_client,
                            const subnet_ipv6_cidr_mask_t& client_ipv6,
                            bool is_withdrawal,
-                           const attack_details_t& current_attack) {
+                           const attack_details_t& current_attack,
+                           const std::string& community_override = "") {
     // TODO: that's very weird approach to use subnet_ipv6_cidr_mask_t for storing next hop which is HOST address
     // We need to rework all structures in stack of BGP logic to switch it to plain in6_addr
 
@@ -138,8 +139,12 @@ void gobgp_ban_manage_ipv6(GrpcClient& gobgp_client,
 
         std::vector<std::string> host_ipv6_communities;
 
-        // This one is an old configuration option which can carry only single community
-        host_ipv6_communities.push_back(fastnetmon_global_configuration.gobgp_community_host_ipv6);
+        // Use community override if provided (for escalation RTBH), otherwise use config
+        if (!community_override.empty()) {
+            host_ipv6_communities.push_back(community_override);
+        } else {
+            host_ipv6_communities.push_back(fastnetmon_global_configuration.gobgp_community_host_ipv6);
+        }
 
         for (auto community_string : host_ipv6_communities) {
             bgp_community_attribute_element_t bgp_community_host;
@@ -155,6 +160,7 @@ void gobgp_ban_manage_ipv6(GrpcClient& gobgp_client,
 
         unicast_ipv6_announce.set_prefix(client_ipv6);
         unicast_ipv6_announce.set_next_hop(gobgp_next_hop_host_ipv6);
+        unicast_ipv6_announce.set_origin(BGP_ORIGIN_IGP);
 
         gobgp_client.AnnounceUnicastPrefixLowLevelIPv6(unicast_ipv6_announce, is_withdrawal);
     }
@@ -164,7 +170,9 @@ void gobgp_ban_manage_ipv6(GrpcClient& gobgp_client,
     }
 }
 
-void gobgp_ban_manage_ipv4(GrpcClient& gobgp_client, uint32_t client_ip, bool is_withdrawal, const attack_details_t& current_attack) {
+void gobgp_ban_manage_ipv4(GrpcClient& gobgp_client, uint32_t client_ip, bool is_withdrawal,
+                           const attack_details_t& current_attack,
+                           const std::string& community_override = "") {
     // Previously we used same next hop for both subnet and host
     uint32_t next_hop_as_integer_legacy = 0;
 
@@ -250,7 +258,12 @@ void gobgp_ban_manage_ipv4(GrpcClient& gobgp_client, uint32_t client_ip, bool is
 
         std::vector<std::string> host_ipv4_communities;
 
-        host_ipv4_communities.push_back(fastnetmon_global_configuration.gobgp_community_host);
+        // Use community override if provided (for escalation RTBH), otherwise use config
+        if (!community_override.empty()) {
+            host_ipv4_communities.push_back(community_override);
+        } else {
+            host_ipv4_communities.push_back(fastnetmon_global_configuration.gobgp_community_host);
+        }
 
         for (auto community_string : host_ipv4_communities) {
             bgp_community_attribute_element_t bgp_community_host;
@@ -268,6 +281,7 @@ void gobgp_ban_manage_ipv4(GrpcClient& gobgp_client, uint32_t client_ip, bool is
 
         unicast_ipv4_announce.set_prefix(host_address_as_subnet);
         unicast_ipv4_announce.set_next_hop(gobgp_next_hop_host_ipv4);
+        unicast_ipv4_announce.set_origin(BGP_ORIGIN_IGP);
 
         gobgp_client.AnnounceUnicastPrefixLowLevelIPv4(unicast_ipv4_announce, is_withdrawal);
     }
@@ -278,7 +292,8 @@ void gobgp_ban_manage(const std::string& action,
                       bool ipv6,
                       uint32_t client_ip,
                       const subnet_ipv6_cidr_mask_t& client_ipv6,
-                      const attack_details_t& current_attack) {
+                      const attack_details_t& current_attack,
+                      const std::string& community_override) {
     GrpcClient gobgp_client = GrpcClient(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()));
 
     bool is_withdrawal = false;
@@ -294,9 +309,9 @@ void gobgp_ban_manage(const std::string& action,
     }
 
     if (ipv6) {
-        gobgp_ban_manage_ipv6(gobgp_client, client_ipv6, is_withdrawal, current_attack);
+        gobgp_ban_manage_ipv6(gobgp_client, client_ipv6, is_withdrawal, current_attack, community_override);
     } else {
-    	gobgp_ban_manage_ipv4(gobgp_client, client_ip, is_withdrawal, current_attack);
+    	gobgp_ban_manage_ipv4(gobgp_client, client_ip, is_withdrawal, current_attack, community_override);
     }
 }
 
@@ -339,7 +354,8 @@ void gobgp_flow_spec_ban_manage(const std::string& action,
             break;
         case ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT:
             bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_RATE_LIMIT);
-            bgp_action.set_rate_limit(flow_spec_rate);
+            // Config value is in bits/second, FlowSpec expects bytes/second
+            bgp_action.set_rate_limit(flow_spec_rate / 8);
             break;
         case ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT:
             bgp_action.set_type(bgp_flow_spec_action_types_t::FLOW_SPEC_ACTION_REDIRECT);

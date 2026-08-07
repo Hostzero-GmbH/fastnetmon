@@ -59,8 +59,8 @@ Only IPs with non-zero traffic are reported. `traffic_direction` is `incoming` o
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `fastnetmon_banned_routes` | gauge | `ip`, `protocol_version`, `host_group`, `attack_uuid` | Currently banned routes (value=1) |
-| `fastnetmon_banned_routes_ban_timestamp_seconds` | gauge | `ip`, `protocol_version` | Unix timestamp when the route was banned |
+| `fastnetmon_banned_routes` | gauge | `ip`, `protocol_version`, `host_group`, `attack_uuid`, `mitigation_type` | Currently banned routes (value=1). `mitigation_type` is `rtbh`, `flowspec`, or `unknown` |
+| `fastnetmon_banned_routes_ban_timestamp_seconds` | gauge | `ip`, `protocol_version`, `mitigation_type` | Unix timestamp when the route was banned |
 | `fastnetmon_banned_routes_total` | gauge | `protocol_version` | Total number of currently banned routes |
 
 ## Prometheus Scrape Config Example

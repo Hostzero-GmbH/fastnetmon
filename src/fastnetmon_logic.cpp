@@ -20,6 +20,8 @@
 
 #include "bgp_protocol_flow_spec.hpp"
 
+#include "escalation_manager.hpp"
+
 #include "filter.hpp"
 
 #include "fast_endianless.hpp"
@@ -910,6 +912,157 @@ void cleanup_ban_list() {
     }
 }
 
+/* Escalation checker thread: FlowSpec-first, RTBH fallback */
+void escalation_checker_thread() {
+    if (!global_escalation_config.enabled) {
+        return;
+    }
+
+    logger << log4cpp::Priority::INFO << "Escalation checker thread started, interval: "
+           << global_escalation_config.check_interval << "s";
+
+    extern abstract_subnet_counters_t<uint32_t, subnet_counter_t> ipv4_host_counters;
+    extern abstract_subnet_counters_t<subnet_ipv6_cidr_mask_t, subnet_counter_t> ipv6_host_counters;
+
+    while (true) {
+        boost::this_thread::sleep(
+            boost::posix_time::seconds(global_escalation_config.check_interval));
+
+        // Get all entries currently at FlowSpec stage
+        std::vector<escalation_entry_t> flowspec_entries;
+        global_escalation_manager.get_flowspec_entries(flowspec_entries);
+
+        if (flowspec_entries.empty()) {
+            continue;
+        }
+
+        logger << log4cpp::Priority::DEBUG << "Escalation: checking " << flowspec_entries.size()
+               << " FlowSpec-stage entries";
+
+        for (const auto& entry : flowspec_entries) {
+            bool still_attacking = false;
+            uint64_t current_pps = 0;
+            uint64_t current_bps = 0;
+
+            if (!entry.ipv6) {
+                // IPv4: get current average speed
+                uint32_t ip_int = 0;
+                if (!convert_ip_as_string_to_uint_safe(entry.ip_as_string, ip_int)) {
+                    continue;
+                }
+
+                subnet_counter_t current_speed;
+                if (!ipv4_host_counters.get_average_speed(ip_int, current_speed)) {
+                    continue;
+                }
+
+                direction_t dir = entry.attack_details.attack_direction;
+                if (dir == INCOMING || dir == OTHER) {
+                    current_pps = current_speed.total.in_packets;
+                    current_bps = current_speed.total.in_bytes * 8;
+                }
+                if (dir == OUTGOING || dir == OTHER) {
+                    current_pps = std::max(current_pps, current_speed.total.out_packets);
+                    current_bps = std::max(current_bps, current_speed.total.out_bytes * 8);
+                }
+
+                double pps_ratio = (entry.threshold_pps > 0)
+                    ? (static_cast<double>(current_pps) / static_cast<double>(entry.threshold_pps)) * 100.0
+                    : 0.0;
+                double mbps_ratio = (entry.threshold_mbps > 0)
+                    ? (static_cast<double>(current_bps / 1000000.0) / static_cast<double>(entry.threshold_mbps)) * 100.0
+                    : 0.0;
+
+                still_attacking =
+                    (entry.threshold_pps > 0 && pps_ratio >= global_escalation_config.rtbh_threshold_ratio) ||
+                    (entry.threshold_mbps > 0 && mbps_ratio >= global_escalation_config.rtbh_threshold_ratio);
+
+                if (still_attacking) {
+                    logger << log4cpp::Priority::INFO
+                           << "Escalation: FlowSpec insufficient for " << entry.ip_as_string
+                           << " (current PPS=" << current_pps
+                           << ", threshold=" << entry.threshold_pps
+                           << ", ratio=" << static_cast<int>(pps_ratio) << "%)"
+                           << " - escalating to RTBH";
+                }
+            } else {
+                // IPv6: get current average speed
+                subnet_ipv6_cidr_mask_t ipv6_subnet;
+                if (!read_ipv6_host_from_string(entry.ip_as_string, ipv6_subnet.subnet_address)) {
+                    continue;
+                }
+                ipv6_subnet.cidr_prefix_length = 128;
+
+                subnet_counter_t current_speed;
+                if (!ipv6_host_counters.get_average_speed(ipv6_subnet, current_speed)) {
+                    continue;
+                }
+
+                direction_t dir = entry.attack_details.attack_direction;
+                if (dir == INCOMING || dir == OTHER) {
+                    current_pps = current_speed.total.in_packets;
+                    current_bps = current_speed.total.in_bytes * 8;
+                }
+                if (dir == OUTGOING || dir == OTHER) {
+                    current_pps = std::max(current_pps, current_speed.total.out_packets);
+                    current_bps = std::max(current_bps, current_speed.total.out_bytes * 8);
+                }
+
+                double pps_ratio = (entry.threshold_pps > 0)
+                    ? (static_cast<double>(current_pps) / static_cast<double>(entry.threshold_pps)) * 100.0
+                    : 0.0;
+                double mbps_ratio = (entry.threshold_mbps > 0)
+                    ? (static_cast<double>(current_bps / 1000000.0) / static_cast<double>(entry.threshold_mbps)) * 100.0
+                    : 0.0;
+
+                still_attacking =
+                    (entry.threshold_pps > 0 && pps_ratio >= global_escalation_config.rtbh_threshold_ratio) ||
+                    (entry.threshold_mbps > 0 && mbps_ratio >= global_escalation_config.rtbh_threshold_ratio);
+
+                if (still_attacking) {
+                    logger << log4cpp::Priority::INFO
+                           << "Escalation: FlowSpec insufficient for " << entry.ip_as_string
+                           << " (current PPS=" << current_pps
+                           << ", threshold=" << entry.threshold_pps
+                           << ", ratio=" << static_cast<int>(pps_ratio) << "%)"
+                           << " - escalating to RTBH";
+                }
+            }
+
+            if (!still_attacking) {
+                continue;
+            }
+
+            // Escalate to RTBH - deploy blackhole route
+#ifdef ENABLE_GOBGP
+            attack_details_t rtbh_details = entry.attack_details;
+            rtbh_details.ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
+
+            uint32_t client_ip_int = 0;
+            subnet_ipv6_cidr_mask_t client_ipv6;
+            bool is_ipv6 = entry.ipv6;
+
+            if (!is_ipv6) {
+                convert_ip_as_string_to_uint_safe(entry.ip_as_string, client_ip_int);
+            } else {
+                read_ipv6_host_from_string(entry.ip_as_string, client_ipv6.subnet_address);
+                client_ipv6.cidr_prefix_length = 128;
+            }
+
+            gobgp_ban_manage("ban", is_ipv6, client_ip_int, client_ipv6, rtbh_details,
+                              global_escalation_config.rtbh_community);
+#else
+            logger << log4cpp::Priority::WARN
+                   << "Escalation: GoBGP not available, cannot deploy RTBH for "
+                   << entry.ip_as_string;
+#endif
+
+            // Mark entry as escalated to RTBH
+            global_escalation_manager.mark_rtbh(entry.ip_as_string);
+        }
+    }
+}
+
 // This code is a source of race conditions of worst kind, we had to rework it ASAP
 std::string print_ddos_attack_details() {
     extern blackhole_ban_list_t<uint32_t> ban_list_ipv4;
@@ -1383,7 +1536,9 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
     if (fastnetmon_global_configuration.gobgp && current_attack.ban_action == ban_action_t::BAN_ACTION_BLACKHOLE) {
         logger << log4cpp::Priority::INFO << "Call GoBGP for " << action_name << " client started: " << client_ip_as_string;
 
-        boost::thread gobgp_thread(gobgp_ban_manage, action_name, ipv6, client_ip, client_ipv6, current_attack);
+        boost::thread gobgp_thread(
+            boost::bind(gobgp_ban_manage, action_name, ipv6, client_ip, client_ipv6,
+                        current_attack, ""));
         gobgp_thread.detach();
 
         logger << log4cpp::Priority::INFO << "Call to GoBGP for " << action_name << " client is finished: " << client_ip_as_string;
@@ -1398,8 +1553,64 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
         gobgp_flowspec_thread.detach();
 
         logger << log4cpp::Priority::INFO << "Call to GoBGP flowspec for " << action_name << " client is finished: " << client_ip_as_string;
+
+        // Register with escalation manager when deploying FlowSpec and escalation is enabled
+        if (attack_action == attack_action_t::ban && global_escalation_config.enabled) {
+            // Use the traffic counters from detection time as the reference threshold.
+            // current_attack.traffic_counters contains the speed that triggered the attack.
+            // We compare future traffic against these values to decide escalation.
+            direction_t dir = current_attack.attack_direction;
+            uint64_t detect_pps = 0;
+            uint64_t detect_bps = 0;
+            if (dir == INCOMING || dir == OTHER) {
+                detect_pps = current_attack.traffic_counters.total.in_packets;
+                detect_bps = current_attack.traffic_counters.total.in_bytes * 8;
+            }
+            if (dir == OUTGOING || dir == OTHER) {
+                detect_pps = std::max(detect_pps, current_attack.traffic_counters.total.out_packets);
+                detect_bps = std::max(detect_bps, current_attack.traffic_counters.total.out_bytes * 8);
+            }
+
+            global_escalation_manager.register_flowspec(
+                client_ip_as_string, ipv6, current_attack,
+                detect_pps, detect_bps / 1000000, 0);
+        }
     }
 #endif
+
+    // Remove from escalation tracking on unban
+    if (attack_action == attack_action_t::unban && global_escalation_config.enabled) {
+        escalation_stage_t stage = global_escalation_manager.get_stage(client_ip_as_string);
+
+        if (stage == escalation_stage_t::RTBH) {
+            // Step down: withdraw RTBH route, keep FlowSpec, keep monitoring.
+            // The unicast RTBH was deployed by the escalation checker with
+            // BAN_ACTION_BLACKHOLE, but current_attack.ban_action is still the
+            // original FlowSpec type. We need to explicitly withdraw the RTBH.
+#ifdef ENABLE_GOBGP
+            attack_details_t rtbh_withdrawal = current_attack;
+            rtbh_withdrawal.ban_action = ban_action_t::BAN_ACTION_BLACKHOLE;
+            std::string rtbh_comm = global_escalation_config.rtbh_community;
+            boost::thread rtbh_withdraw_thread(
+                boost::bind(gobgp_ban_manage, "unban", ipv6, client_ip, client_ipv6,
+                            rtbh_withdrawal, rtbh_comm));
+            rtbh_withdraw_thread.detach();
+#endif
+            // Step back to FlowSpec stage (RTBH withdrawn, FlowSpec stays)
+            global_escalation_manager.step_down_to_flowspec(client_ip_as_string);
+
+            logger << log4cpp::Priority::INFO
+                   << "Escalation: stepped down from RTBH to FlowSpec for "
+                   << client_ip_as_string;
+
+            // Return early: don't withdraw FlowSpec, don't remove tracking,
+            // don't run unban hooks. The IP stays in the ban list.
+            return;
+        }
+
+        // FlowSpec stage or untracked: normal full unban
+        global_escalation_manager.remove(client_ip_as_string);
+    }
 
     if (attack_action == attack_action_t::ban) { 
 #ifdef REDIS
@@ -1828,6 +2039,9 @@ void speed_calculation_callback_local_ipv6(const subnet_ipv6_cidr_mask_t& curren
     attack_details.ban_action = current_ban_settings.ban_action;
     attack_details.flow_spec_rate_limit = current_ban_settings.flow_spec_rate_limit;
 
+    // Generate a unique UUID for this attack
+    attack_details.generate_uuid();
+
     bool enable_backet_capture =
         packet_buckets_ipv6_storage.enable_packet_capture(current_subnet, attack_details, collection_pattern_t::ONCE);
 
@@ -1951,6 +2165,9 @@ void speed_calculation_callback_local_ipv4(const uint32_t& client_ip, const subn
     // Set flowspec mitigation action from host group settings
     attack_details.ban_action = current_ban_settings.ban_action;
     attack_details.flow_spec_rate_limit = current_ban_settings.flow_spec_rate_limit;
+
+    // Generate a unique UUID for this attack
+    attack_details.generate_uuid();
 
     bool enable_backet_capture =
         packet_buckets_ipv4_storage.enable_packet_capture(client_ip, attack_details, collection_pattern_t::ONCE);
@@ -3455,6 +3672,31 @@ void add_banned_routes_to_prometheus(std::stringstream& output) {
     output << "# HELP fastnetmon_banned_routes_total Total number of currently banned routes\n";
     output << "# TYPE fastnetmon_banned_routes_total gauge\n";
 
+    // Resolve the live mitigation type for a banned IP. Prefer the escalation
+    // manager stage, which reflects the current state (FlowSpec may have been
+    // promoted to RTBH after ban). Fall back to the ban-time action only when
+    // escalation is disabled or the IP is not tracked.
+    auto get_mitigation_type = [](const std::string& escalation_key,
+                                  const attack_details_t& details) {
+        if (global_escalation_config.enabled) {
+            escalation_stage_t stage = global_escalation_manager.get_stage(escalation_key);
+            if (stage == escalation_stage_t::RTBH) {
+                return std::string("rtbh");
+            }
+            if (stage == escalation_stage_t::FLOWSPEC) {
+                return std::string("flowspec");
+            }
+        }
+
+        switch (details.ban_action) {
+            case ban_action_t::BAN_ACTION_BLACKHOLE: return std::string("rtbh");
+            case ban_action_t::BAN_ACTION_FLOW_SPEC_DISCARD:
+            case ban_action_t::BAN_ACTION_FLOW_SPEC_RATE_LIMIT:
+            case ban_action_t::BAN_ACTION_FLOW_SPEC_REDIRECT: return std::string("flowspec");
+            default: return std::string("unknown");
+        }
+    };
+
     // IPv4 banned routes
     {
         std::map<uint32_t, attack_details_t> ban_list_copy;
@@ -3465,9 +3707,11 @@ void add_banned_routes_to_prometheus(std::stringstream& output) {
             output << "fastnetmon_banned_routes{ip=\"" << ip
                    << "\",protocol_version=\"ipv4\",host_group=\""
                    << itr.second.host_group << "\",attack_uuid=\""
-                   << itr.second.get_attack_uuid_as_string() << "\"} 1\n";
+                   << itr.second.get_attack_uuid_as_string()
+                   << "\",mitigation_type=\"" << get_mitigation_type(ip, itr.second) << "\"} 1\n";
             output << "fastnetmon_banned_routes_ban_timestamp_seconds{ip=\"" << ip
-                   << "\",protocol_version=\"ipv4\"} "
+                   << "\",protocol_version=\"ipv4\",mitigation_type=\""
+                   << get_mitigation_type(ip, itr.second) << "\"} "
                    << itr.second.ban_timestamp << "\n";
         }
 
@@ -3485,9 +3729,11 @@ void add_banned_routes_to_prometheus(std::stringstream& output) {
             output << "fastnetmon_banned_routes{ip=\"" << ip
                    << "\",protocol_version=\"ipv6\",host_group=\""
                    << itr.second.host_group << "\",attack_uuid=\""
-                   << itr.second.get_attack_uuid_as_string() << "\"} 1\n";
+                   << itr.second.get_attack_uuid_as_string()
+                   << "\",mitigation_type=\"" << get_mitigation_type(ip, itr.second) << "\"} 1\n";
             output << "fastnetmon_banned_routes_ban_timestamp_seconds{ip=\"" << ip
-                   << "\",protocol_version=\"ipv6\"} "
+                   << "\",protocol_version=\"ipv6\",mitigation_type=\""
+                   << get_mitigation_type(ip, itr.second) << "\"} "
                    << itr.second.ban_timestamp << "\n";
         }
 

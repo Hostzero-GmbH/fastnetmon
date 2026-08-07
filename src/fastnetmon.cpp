@@ -66,6 +66,8 @@
 
 #include "bgp_protocol_flow_spec.hpp"
 
+#include "escalation_manager.hpp"
+
 // Yes, maybe it's not an good idea but with this we can guarantee working code in example plugin
 #include "example_plugin/example_collector.hpp"
 
@@ -2080,6 +2082,9 @@ int main(int argc, char** argv) {
     }
 #endif
 
+    // Read escalation config
+    read_escalation_config();
+
 #ifdef KAFKA
     if (kafka_traffic_export) {
         if (kafka_traffic_export_brokers.size() == 0) {
@@ -2176,6 +2181,11 @@ int main(int argc, char** argv) {
     // Run banlist cleaner thread
     if (unban_enabled) {
         service_thread_group.add_thread(new boost::thread(cleanup_ban_list));
+    }
+
+    // Start escalation checker thread (FlowSpec-first, RTBH fallback)
+    if (global_escalation_config.enabled) {
+        service_thread_group.add_thread(new boost::thread(escalation_checker_thread));
     }
 
     // This thread will check about filled buckets with packets and process they

@@ -81,5 +81,9 @@ class fastnetmon_configuration_t {
 
     std::string gobgp_community_host_ipv6{ "65001:668" };
     std::string gobgp_community_subnet_ipv6{ "65001:667" };
+    // Escalation: FlowSpec-first, RTBH as fallback
+    bool escalation_enabled{ false };
+    unsigned int escalation_check_interval{ 10 };
+    unsigned int escalation_rtbh_threshold_ratio{ 80 };
 };
 
