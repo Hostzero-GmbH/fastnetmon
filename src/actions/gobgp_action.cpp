@@ -160,6 +160,7 @@ void gobgp_ban_manage_ipv6(GrpcClient& gobgp_client,
 
         unicast_ipv6_announce.set_prefix(client_ipv6);
         unicast_ipv6_announce.set_next_hop(gobgp_next_hop_host_ipv6);
+        unicast_ipv6_announce.set_origin(BGP_ORIGIN_IGP);
 
         gobgp_client.AnnounceUnicastPrefixLowLevelIPv6(unicast_ipv6_announce, is_withdrawal);
     }
@@ -280,6 +281,7 @@ void gobgp_ban_manage_ipv4(GrpcClient& gobgp_client, uint32_t client_ip, bool is
 
         unicast_ipv4_announce.set_prefix(host_address_as_subnet);
         unicast_ipv4_announce.set_next_hop(gobgp_next_hop_host_ipv4);
+        unicast_ipv4_announce.set_origin(BGP_ORIGIN_IGP);
 
         gobgp_client.AnnounceUnicastPrefixLowLevelIPv4(unicast_ipv4_announce, is_withdrawal);
     }
