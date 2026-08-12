@@ -27,6 +27,8 @@ src/traffic_output_formats/protobuf/traffic_data.pb.h
 
 # Build artifacts
 build/
+Dockerfile.build
+deploy.sh
 build2/
 dist/
 .cache/
