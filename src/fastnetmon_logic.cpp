@@ -813,6 +813,21 @@ void execute_unban_operation_ipv4() {
         call_blackhole_actions_per_host(attack_action_t::unban, itr->first, zero_ipv6_address, false, itr->second,
                                         attack_detection_source_t::Automatic, flow_attack_details,
                                         simple_packets_buffer, raw_packets_buffer);
+
+        // Escalation step-down: if the IP was at RTBH stage, the unban hook
+        // stepped it down to FlowSpec and the IP must STAY in the ban list
+        // (monitoring continues). Only remove the ban entry for a real full
+        // unban (stage NONE after the call).
+        if (global_escalation_config.enabled) {
+            std::string ip_as_string = convert_ip_as_uint_to_string(client_ip);
+            escalation_stage_t stage = global_escalation_manager.get_stage(ip_as_string);
+
+            if (stage != escalation_stage_t::NONE) {
+                logger << log4cpp::Priority::INFO << "IP " << ip_as_string
+                       << " is still in escalation stage, keeping it in the ban list";
+                ban_list_items_for_erase.pop_back();
+            }
+        }
     }
 
     // Remove all unbanned hosts from the ban list
@@ -879,6 +894,19 @@ void execute_unban_operation_ipv6() {
         call_blackhole_actions_per_host(attack_action_t::unban, zero_ipv4_ip_address, itr.first, true, itr.second,
                                         attack_detection_source_t::Automatic, flow_attack_details,
                                         simple_packets_buffer, raw_packets_buffer);
+
+        // Escalation step-down: if the IP was at RTBH stage, the unban hook
+        // stepped it down to FlowSpec and the IP must STAY in the ban list.
+        if (global_escalation_config.enabled) {
+            std::string ip_as_string = print_ipv6_cidr_subnet(itr.first);
+            escalation_stage_t stage = global_escalation_manager.get_stage(ip_as_string);
+
+            if (stage != escalation_stage_t::NONE) {
+                logger << log4cpp::Priority::INFO << "IPv6 " << ip_as_string
+                       << " is still in escalation stage, keeping it in the ban list";
+                ban_list_items_for_erase.pop_back();
+            }
+        }
     }
 
     // Remove all unbanned hosts from the ban list
@@ -923,6 +951,8 @@ void escalation_checker_thread() {
 
     extern abstract_subnet_counters_t<uint32_t, subnet_counter_t> ipv4_host_counters;
     extern abstract_subnet_counters_t<subnet_ipv6_cidr_mask_t, subnet_counter_t> ipv6_host_counters;
+    extern patricia_tree_t* lookup_tree_ipv4;
+    extern patricia_tree_t* lookup_tree_ipv6;
 
     while (true) {
         boost::this_thread::sleep(
@@ -944,11 +974,36 @@ void escalation_checker_thread() {
             uint64_t current_pps = 0;
             uint64_t current_bps = 0;
 
+            // Reference thresholds for the ratio check. We use the CONFIGURED
+            // ban thresholds (from ban settings, looked up live) rather than
+            // the detection-time traffic counters. The detection-time byte
+            // rate of a high-pps/low-bps attack (e.g. SYN flood) is tiny, so
+            // any ordinary background traffic would falsely exceed 80% of it
+            // and trigger an unnecessary RTBH escalation. This thread does not
+            // hold the packet bucket mutex, so patricia lookups are safe here.
+            uint64_t ref_threshold_pps = entry.threshold_pps;
+            uint64_t ref_threshold_mbps = entry.threshold_mbps;
+
             if (!entry.ipv6) {
                 // IPv4: get current average speed
                 uint32_t ip_int = 0;
                 if (!convert_ip_as_string_to_uint_safe(entry.ip_as_string, ip_int)) {
                     continue;
+                }
+
+                // Look up configured thresholds for this IP
+                subnet_cidr_mask_t customer_subnet;
+                if (lookup_ip_in_integer_form_inpatricia_and_return_subnet_if_found(
+                        lookup_tree_ipv4, ip_int, customer_subnet)) {
+                    std::string host_group_name;
+                    ban_settings_t settings = get_ban_settings_for_ip(ip_int, customer_subnet, host_group_name);
+
+                    if (settings.enable_ban_for_pps && settings.ban_threshold_pps > 0) {
+                        ref_threshold_pps = settings.ban_threshold_pps;
+                    }
+                    if (settings.enable_ban_for_bandwidth && settings.ban_threshold_mbps > 0) {
+                        ref_threshold_mbps = settings.ban_threshold_mbps;
+                    }
                 }
 
                 subnet_counter_t current_speed;
@@ -966,22 +1021,22 @@ void escalation_checker_thread() {
                     current_bps = std::max(current_bps, current_speed.total.out_bytes * 8);
                 }
 
-                double pps_ratio = (entry.threshold_pps > 0)
-                    ? (static_cast<double>(current_pps) / static_cast<double>(entry.threshold_pps)) * 100.0
+                double pps_ratio = (ref_threshold_pps > 0)
+                    ? (static_cast<double>(current_pps) / static_cast<double>(ref_threshold_pps)) * 100.0
                     : 0.0;
-                double mbps_ratio = (entry.threshold_mbps > 0)
-                    ? (static_cast<double>(current_bps / 1000000.0) / static_cast<double>(entry.threshold_mbps)) * 100.0
+                double mbps_ratio = (ref_threshold_mbps > 0)
+                    ? (static_cast<double>(current_bps / 1000000.0) / static_cast<double>(ref_threshold_mbps)) * 100.0
                     : 0.0;
 
                 still_attacking =
-                    (entry.threshold_pps > 0 && pps_ratio >= global_escalation_config.rtbh_threshold_ratio) ||
-                    (entry.threshold_mbps > 0 && mbps_ratio >= global_escalation_config.rtbh_threshold_ratio);
+                    (ref_threshold_pps > 0 && pps_ratio >= global_escalation_config.rtbh_threshold_ratio) ||
+                    (ref_threshold_mbps > 0 && mbps_ratio >= global_escalation_config.rtbh_threshold_ratio);
 
                 if (still_attacking) {
                     logger << log4cpp::Priority::INFO
                            << "Escalation: FlowSpec insufficient for " << entry.ip_as_string
                            << " (current PPS=" << current_pps
-                           << ", threshold=" << entry.threshold_pps
+                           << ", threshold=" << ref_threshold_pps
                            << ", ratio=" << static_cast<int>(pps_ratio) << "%)"
                            << " - escalating to RTBH";
                 }
@@ -992,6 +1047,20 @@ void escalation_checker_thread() {
                     continue;
                 }
                 ipv6_subnet.cidr_prefix_length = 128;
+
+                // Look up configured thresholds for this IPv6 address
+                subnet_ipv6_cidr_mask_t customer_subnet = ipv6_subnet;
+                if (ip_belongs_to_patricia_tree_ipv6(lookup_tree_ipv6, ipv6_subnet.subnet_address)) {
+                    std::string host_group_name;
+                    ban_settings_t settings = get_ban_settings_for_ipv6(ipv6_subnet, customer_subnet, host_group_name);
+
+                    if (settings.enable_ban_for_pps && settings.ban_threshold_pps > 0) {
+                        ref_threshold_pps = settings.ban_threshold_pps;
+                    }
+                    if (settings.enable_ban_for_bandwidth && settings.ban_threshold_mbps > 0) {
+                        ref_threshold_mbps = settings.ban_threshold_mbps;
+                    }
+                }
 
                 subnet_counter_t current_speed;
                 if (!ipv6_host_counters.get_average_speed(ipv6_subnet, current_speed)) {
@@ -1008,22 +1077,22 @@ void escalation_checker_thread() {
                     current_bps = std::max(current_bps, current_speed.total.out_bytes * 8);
                 }
 
-                double pps_ratio = (entry.threshold_pps > 0)
-                    ? (static_cast<double>(current_pps) / static_cast<double>(entry.threshold_pps)) * 100.0
+                double pps_ratio = (ref_threshold_pps > 0)
+                    ? (static_cast<double>(current_pps) / static_cast<double>(ref_threshold_pps)) * 100.0
                     : 0.0;
-                double mbps_ratio = (entry.threshold_mbps > 0)
-                    ? (static_cast<double>(current_bps / 1000000.0) / static_cast<double>(entry.threshold_mbps)) * 100.0
+                double mbps_ratio = (ref_threshold_mbps > 0)
+                    ? (static_cast<double>(current_bps / 1000000.0) / static_cast<double>(ref_threshold_mbps)) * 100.0
                     : 0.0;
 
                 still_attacking =
-                    (entry.threshold_pps > 0 && pps_ratio >= global_escalation_config.rtbh_threshold_ratio) ||
-                    (entry.threshold_mbps > 0 && mbps_ratio >= global_escalation_config.rtbh_threshold_ratio);
+                    (ref_threshold_pps > 0 && pps_ratio >= global_escalation_config.rtbh_threshold_ratio) ||
+                    (ref_threshold_mbps > 0 && mbps_ratio >= global_escalation_config.rtbh_threshold_ratio);
 
                 if (still_attacking) {
                     logger << log4cpp::Priority::INFO
                            << "Escalation: FlowSpec insufficient for " << entry.ip_as_string
                            << " (current PPS=" << current_pps
-                           << ", threshold=" << entry.threshold_pps
+                           << ", threshold=" << ref_threshold_pps
                            << ", ratio=" << static_cast<int>(pps_ratio) << "%)"
                            << " - escalating to RTBH";
                 }
