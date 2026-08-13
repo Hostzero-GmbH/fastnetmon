@@ -413,6 +413,20 @@ target_link_libraries(escalation_manager fast_library)
 # Link escalation manager into main executable
 target_link_libraries(fastnetmon escalation_manager)
 
+# Post-mortem attack analysis: pcap dump, top talkers, classification, JSON report
+add_library(attack_report STATIC attack_report.cpp)
+target_link_libraries(attack_report fast_library fastnetmon_pcap_format)
+
+# Link attack report library into main executable
+target_link_libraries(fastnetmon attack_report)
+
+# Post-unban verification: observe unbanned IPs for attack resumption
+add_library(unban_verification_manager STATIC unban_verification_manager.cpp)
+target_link_libraries(unban_verification_manager fast_library)
+
+# Link unban verification manager into main executable
+target_link_libraries(fastnetmon unban_verification_manager)
+
 # Our filtering library
 add_library(filter STATIC filter.cpp)
 target_link_libraries(filter bgp_protocol bgp_protocol_flow_spec)

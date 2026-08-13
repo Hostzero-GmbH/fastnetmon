@@ -83,6 +83,11 @@
     // We trigger this action manually
     current_attack.attack_detection_source = attack_detection_source_t::Manual;
 
+    // Generate UUID and set ban timestamp for attack report consistency
+    current_attack.generate_uuid();
+    time(&current_attack.ban_timestamp);
+    current_attack.detection_time = current_attack.ban_timestamp;
+
     boost::circular_buffer<simple_packet_t> empty_simple_packets_buffer;
 
     // Empty raw buffer

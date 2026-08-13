@@ -49,6 +49,8 @@ class attack_details_t {
 
     // Time when we ban this IP
     time_t ban_timestamp = 0;
+    // Time when the attack was detected (threshold crossed)
+    time_t detection_time = 0;
     bool unban_enabled   = true;
     int ban_time         = 0; // seconds of the ban
 

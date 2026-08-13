@@ -68,6 +68,10 @@
 
 #include "escalation_manager.hpp"
 
+#include "attack_report.hpp"
+
+#include "unban_verification_manager.hpp"
+
 // Yes, maybe it's not an good idea but with this we can guarantee working code in example plugin
 #include "example_plugin/example_collector.hpp"
 
@@ -2085,6 +2089,12 @@ int main(int argc, char** argv) {
     // Read escalation config
     read_escalation_config();
 
+    // Read post-mortem analysis config (pcap dump, attack report, top talkers, classification)
+    read_attack_report_config();
+
+    // Read post-unban verification config
+    read_unban_verification_config();
+
 #ifdef KAFKA
     if (kafka_traffic_export) {
         if (kafka_traffic_export_brokers.size() == 0) {
@@ -2186,6 +2196,11 @@ int main(int argc, char** argv) {
     // Start escalation checker thread (FlowSpec-first, RTBH fallback)
     if (global_escalation_config.enabled) {
         service_thread_group.add_thread(new boost::thread(escalation_checker_thread));
+    }
+
+    // Start post-unban verification checker thread
+    if (global_unban_verification_config.enabled) {
+        service_thread_group.add_thread(new boost::thread(post_unban_verification_checker_thread));
     }
 
     // This thread will check about filled buckets with packets and process they

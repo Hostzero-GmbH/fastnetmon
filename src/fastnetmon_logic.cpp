@@ -22,6 +22,10 @@
 
 #include "escalation_manager.hpp"
 
+#include "attack_report.hpp"
+
+#include "unban_verification_manager.hpp"
+
 #include "filter.hpp"
 
 #include "fast_endianless.hpp"
@@ -1059,6 +1063,13 @@ void escalation_checker_thread() {
 
             // Mark entry as escalated to RTBH
             global_escalation_manager.mark_rtbh(entry.ip_as_string);
+
+            // Feature 3: timeline event for escalation
+            if (global_attack_report_config.attack_report) {
+                append_timeline_event_to_report(entry.ip_as_string, entry.attack_details,
+                                                "escalated_to_rtbh",
+                                                "FlowSpec insufficient, RTBH deployed", "");
+            }
         }
     }
 }
@@ -1485,6 +1496,44 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
         }
     }
 
+    // Post-mortem analysis: PCAP fingerprint dump and JSON attack report (on ban)
+    if (attack_action == attack_action_t::ban) {
+        // Feature 1: persistent PCAP dump of raw attack packets
+        std::string pcap_file_path;
+        if (global_attack_report_config.pcap_dump && !raw_packets_buffer.empty()) {
+            pcap_file_path = get_attack_pcap_file_path(client_ip_as_string, current_attack);
+            write_pcap_dump(pcap_file_path, raw_packets_buffer, global_attack_report_config.pcap_dump_linktype);
+        }
+
+        // Features 4, 5: top talkers and attack classification from captured sample
+        std::vector<top_talker_entry_t> top_talkers = aggregate_top_talkers(
+            simple_packets_buffer, current_attack.attack_direction,
+            global_attack_report_config.top_talkers_max_entries);
+
+        attack_classification_result_t classification = classify_attack(
+            current_attack.traffic_counters, current_attack.attack_direction, simple_packets_buffer);
+
+        // Features 2, 3: attack report with timeline
+        std::vector<timeline_event_t> timeline;
+
+        timeline_event_t detected_event;
+        detected_event.event_type = "detected";
+        detected_event.timestamp = current_attack.detection_time;
+        detected_event.details = "threshold: " + get_human_readable_threshold_type(current_attack.attack_detection_threshold);
+        timeline.push_back(detected_event);
+
+        timeline_event_t banned_event;
+        banned_event.event_type = "banned";
+        banned_event.timestamp = std::time(nullptr);
+        banned_event.details = std::string("ban_action: ") + (current_attack.ban_action == ban_action_t::BAN_ACTION_BLACKHOLE ? "blackhole"
+            : (current_attack.ban_action == ban_action_t::BAN_ACTION_FLOW_SPEC_DISCARD ? "flow_spec_discard"
+            : "flow_spec_rate_limit"));
+        timeline.push_back(banned_event);
+
+        write_attack_report(client_ip_as_string, current_attack, top_talkers, classification, timeline,
+                            pcap_file_path, "active");
+    }
+
     if (notify_script_enabled) {
         std::string pps_as_string            = convert_int_to_string(current_attack.attack_power);
         std::string data_direction_as_string = get_direction_name(current_attack.attack_direction);
@@ -1605,11 +1654,49 @@ void call_blackhole_actions_per_host(attack_action_t attack_action,
 
             // Return early: don't withdraw FlowSpec, don't remove tracking,
             // don't run unban hooks. The IP stays in the ban list.
+
+            // Feature 3: timeline event for de-escalation
+            if (global_attack_report_config.attack_report) {
+                append_timeline_event_to_report(client_ip_as_string, current_attack,
+                                                "deescalated_to_flowspec",
+                                                "RTBH withdrawn, FlowSpec retained", "");
+            }
+
             return;
         }
 
         // FlowSpec stage or untracked: normal full unban
         global_escalation_manager.remove(client_ip_as_string);
+    }
+
+    // Post-mortem analysis: update report on unban + register verification
+    if (attack_action == attack_action_t::unban) {
+        // Feature 3: timeline event for unban
+        if (global_attack_report_config.attack_report) {
+            append_timeline_event_to_report(client_ip_as_string, current_attack, "unbanned",
+                                            "observation period: " + convert_int_to_string(global_unban_verification_config.observation_interval) + "s",
+                                            "unbanned");
+        }
+
+        // Feature 7: post-unban verification — observe IP for attack resumption
+        if (global_unban_verification_config.enabled) {
+            direction_t dir = current_attack.attack_direction;
+            uint64_t detect_pps = 0;
+            uint64_t detect_bps = 0;
+            if (dir == INCOMING || dir == OTHER) {
+                detect_pps = current_attack.traffic_counters.total.in_packets;
+                detect_bps = current_attack.traffic_counters.total.in_bytes * 8;
+            }
+            if (dir == OUTGOING || dir == OTHER) {
+                detect_pps = std::max(detect_pps, current_attack.traffic_counters.total.out_packets);
+                detect_bps = std::max(detect_bps, current_attack.traffic_counters.total.out_bytes * 8);
+            }
+
+            global_unban_verification_manager.add(
+                client_ip_as_string, ipv6, current_attack,
+                detect_pps, detect_bps / 1000000, 0,
+                global_unban_verification_config.observation_interval);
+        }
     }
 
     if (attack_action == attack_action_t::ban) { 
@@ -2042,6 +2129,9 @@ void speed_calculation_callback_local_ipv6(const subnet_ipv6_cidr_mask_t& curren
     // Generate a unique UUID for this attack
     attack_details.generate_uuid();
 
+    // Record detection time for post-mortem analysis
+    time(&attack_details.detection_time);
+
     bool enable_backet_capture =
         packet_buckets_ipv6_storage.enable_packet_capture(current_subnet, attack_details, collection_pattern_t::ONCE);
 
@@ -2168,6 +2258,9 @@ void speed_calculation_callback_local_ipv4(const uint32_t& client_ip, const subn
 
     // Generate a unique UUID for this attack
     attack_details.generate_uuid();
+
+    // Record detection time for post-mortem analysis
+    time(&attack_details.detection_time);
 
     bool enable_backet_capture =
         packet_buckets_ipv4_storage.enable_packet_capture(client_ip, attack_details, collection_pattern_t::ONCE);
@@ -4006,5 +4099,136 @@ void send_attack_data_to_reporting_server(const std::string& attack_json_string)
     if (response_code != 200) {
         logger << log4cpp::Priority::DEBUG << "Got code " << response_code << " from stats server instead of 200";
         return;
+    }
+}
+
+// Post-unban verification checker thread
+// Observes unbanned IPs for attack resumption. Re-bans if the attack
+// continues above the detection-time thresholds. Confirms finished when
+// the observation interval expires without re-detection.
+void post_unban_verification_checker_thread() {
+    if (!global_unban_verification_config.enabled) {
+        return;
+    }
+
+    extern abstract_subnet_counters_t<uint32_t, subnet_counter_t> ipv4_host_counters;
+    extern abstract_subnet_counters_t<subnet_ipv6_cidr_mask_t, subnet_counter_t> ipv6_host_counters;
+    extern blackhole_ban_list_t<uint32_t> ban_list_ipv4;
+    extern blackhole_ban_list_t<subnet_ipv6_cidr_mask_t> ban_list_ipv6;
+
+    logger << log4cpp::Priority::INFO << "Post-unban verification checker thread started, interval: "
+           << global_unban_verification_config.check_interval << "s";
+
+    while (true) {
+        boost::this_thread::sleep(
+            boost::posix_time::seconds(global_unban_verification_config.check_interval));
+
+        std::vector<unban_verification_entry_t> entries;
+        global_unban_verification_manager.get_entries(entries);
+
+        if (entries.empty()) {
+            continue;
+        }
+
+        time_t now;
+        time(&now);
+
+        for (const auto& entry : entries) {
+            bool attack_resumed = false;
+            subnet_counter_t current_speed;
+            bool got_speed = false;
+
+            if (!entry.ipv6) {
+                uint32_t ip_int = 0;
+                if (convert_ip_as_string_to_uint_safe(entry.ip_as_string, ip_int)) {
+                    got_speed = ipv4_host_counters.get_average_speed(ip_int, current_speed);
+                }
+            } else {
+                subnet_ipv6_cidr_mask_t ipv6_subnet;
+                if (read_ipv6_host_from_string(entry.ip_as_string, ipv6_subnet.subnet_address)) {
+                    ipv6_subnet.cidr_prefix_length = 128;
+                    got_speed = ipv6_host_counters.get_average_speed(ipv6_subnet, current_speed);
+                }
+            }
+
+            if (got_speed) {
+                // Sample current traffic in the attack direction
+                direction_t dir = entry.attack_details.attack_direction;
+                uint64_t current_pps = 0;
+                uint64_t current_bps = 0;
+                if (dir == INCOMING || dir == OTHER) {
+                    current_pps = current_speed.total.in_packets;
+                    current_bps = current_speed.total.in_bytes * 8;
+                }
+                if (dir == OUTGOING || dir == OTHER) {
+                    current_pps = std::max(current_pps, current_speed.total.out_packets);
+                    current_bps = std::max(current_bps, current_speed.total.out_bytes * 8);
+                }
+
+                // Check if traffic exceeds the detection-time reference thresholds
+                attack_resumed =
+                    (entry.threshold_pps > 0 && current_pps >= entry.threshold_pps) ||
+                    (entry.threshold_mbps > 0 && (current_bps / 1000000) >= entry.threshold_mbps);
+            }
+
+            // Feature 7: re-ban if attack resumed during verification
+            if (attack_resumed && global_unban_verification_config.reban) {
+                logger << log4cpp::Priority::INFO
+                       << "Post-unban verification: attack resumed for " << entry.ip_as_string
+                       << ", re-banning";
+
+                // Build re-ban attack details (same UUID, refreshed counters)
+                attack_details_t reban_details = entry.attack_details;
+                reban_details.traffic_counters = current_speed;
+                time(&reban_details.ban_timestamp);
+
+                // Re-ban via the same path as a normal ban (fast path, no new bucket collection)
+                if (!entry.ipv6) {
+                    uint32_t ip_int = 0;
+                    if (convert_ip_as_string_to_uint_safe(entry.ip_as_string, ip_int)) {
+                        ban_list_ipv4.add_to_blackhole(ip_int, reban_details);
+
+                        subnet_ipv6_cidr_mask_t zero_ipv6;
+                        boost::circular_buffer<simple_packet_t> empty_simple;
+                        boost::circular_buffer<fixed_size_packet_storage_t> empty_raw;
+
+                        call_blackhole_actions_per_host(
+                            attack_action_t::ban, ip_int, zero_ipv6, false, reban_details,
+                            attack_detection_source_t::Automatic, "", empty_simple, empty_raw);
+                    }
+                } else {
+                    subnet_ipv6_cidr_mask_t ipv6_subnet;
+                    if (read_ipv6_host_from_string(entry.ip_as_string, ipv6_subnet.subnet_address)) {
+                        ipv6_subnet.cidr_prefix_length = 128;
+                        ban_list_ipv6.add_to_blackhole(ipv6_subnet, reban_details);
+
+                        uint32_t zero_ipv4 = 0;
+                        boost::circular_buffer<simple_packet_t> empty_simple;
+                        boost::circular_buffer<fixed_size_packet_storage_t> empty_raw;
+
+                        call_blackhole_actions_per_host(
+                            attack_action_t::ban, zero_ipv4, ipv6_subnet, true, reban_details,
+                            attack_detection_source_t::Automatic, "", empty_simple, empty_raw);
+                    }
+                }
+
+                global_unban_verification_manager.remove(entry.ip_as_string);
+                continue;
+            }
+
+            // Feature 7: observation interval expired without re-detection
+            if (difftime(now, entry.unban_time) >= entry.observation_interval) {
+                logger << log4cpp::Priority::INFO
+                       << "Post-unban verification: " << entry.ip_as_string << " confirmed finished";
+
+                if (global_attack_report_config.attack_report) {
+                    append_timeline_event_to_report(entry.ip_as_string, entry.attack_details,
+                                                    "verification_passed",
+                                                    "attack confirmed finished", "completed");
+                }
+
+                global_unban_verification_manager.remove(entry.ip_as_string);
+            }
+        }
     }
 }

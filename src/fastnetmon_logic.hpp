@@ -17,6 +17,10 @@ std::string generate_flow_spec_for_amplification_attack(amplification_attack_typ
 // Escalation checker thread: FlowSpec-first, RTBH fallback
 void escalation_checker_thread();
 
+// Post-unban verification checker thread: observes unbanned IPs for attack
+// resumption and re-bans if the attack continues
+void post_unban_verification_checker_thread();
+
 bool we_should_ban_this_entity(const subnet_counter_t& average_speed_element,
                                const ban_settings_t& current_ban_settings,
                                attack_detection_threshold_type_t& attack_detection_source,
@@ -113,3 +117,6 @@ void collect_stats();
 void start_prometheus_web_server();
 std::string get_human_readable_attack_detection_direction(attack_detection_direction_type_t attack_detection_direction);
 void send_attack_data_to_reporting_server(const std::string& attack_json_string);
+
+// Human-readable name for the threshold type that triggered the attack
+std::string get_human_readable_threshold_type(attack_detection_threshold_type_t detecttion_type);
