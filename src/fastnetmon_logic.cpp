@@ -1120,6 +1120,34 @@ void escalation_checker_thread() {
 
             gobgp_ban_manage("ban", is_ipv6, client_ip_int, client_ipv6, rtbh_details,
                               global_escalation_config.rtbh_community);
+
+            // Ensure the IP is in the ban list so Prometheus metrics show it.
+            // The escalation checker may deploy RTBH for an IP that was removed
+            // from the ban list (e.g. ghost entry after step-down), or the IP
+            // may already be in the ban list from the original ban. Either way,
+            // the metrics must reflect the current mitigation state.
+            {
+                extern blackhole_ban_list_t<uint32_t> ban_list_ipv4;
+                extern blackhole_ban_list_t<subnet_ipv6_cidr_mask_t> ban_list_ipv6;
+
+                if (!is_ipv6) {
+                    if (!ban_list_ipv4.is_blackholed(client_ip_int)) {
+                        time(&rtbh_details.ban_timestamp);
+                        ban_list_ipv4.add_to_blackhole(client_ip_int, rtbh_details);
+                        logger << log4cpp::Priority::INFO
+                               << "Escalation: added " << entry.ip_as_string
+                               << " to ban list for metrics tracking";
+                    }
+                } else {
+                    if (!ban_list_ipv6.is_blackholed(client_ipv6)) {
+                        time(&rtbh_details.ban_timestamp);
+                        ban_list_ipv6.add_to_blackhole(client_ipv6, rtbh_details);
+                        logger << log4cpp::Priority::INFO
+                               << "Escalation: added " << entry.ip_as_string
+                               << " to IPv6 ban list for metrics tracking";
+                    }
+                }
+            }
 #else
             logger << log4cpp::Priority::WARN
                    << "Escalation: GoBGP not available, cannot deploy RTBH for "
